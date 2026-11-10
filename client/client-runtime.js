@@ -8,6 +8,8 @@
   const browserSendBeacon = globalThis.navigator?.sendBeacon?.bind(globalThis.navigator) || null;
   let endpoint = "";
   let clientVersion = "";
+  /** Local Gateway discovered by the native probe, mirrored for our own UI. */
+  let localDevice = { endpoint: "http://127.0.0.1:38200", online: false, requiresPassword: false };
   /** Which device the shared core's requests should target. `null` = native default. */
   let activeDeviceId = null;
   /** Device roster mirrored from the native bridge, for the device manager panel. */
@@ -426,6 +428,8 @@
     get clientVersion() { return clientVersion; },
     get activeDeviceId() { return activeDeviceId; },
     get devices() { return knownDevices.map((device) => ({ ...device })); },
+    /** Local Gateway reported by the native probe; used by the connect dialog. */
+    get localDevice() { return { ...localDevice }; },
     fetch: nativeFetch,
     sendBeacon(input, body) {
       void nativeFetch(input, { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {});
@@ -450,13 +454,14 @@
       knownDevices = Array.isArray(bootstrap.devices) ? bootstrap.devices : [];
       activeDeviceId = bootstrap.activeDeviceId ? String(bootstrap.activeDeviceId) : null;
       endpoint = String(bootstrap.endpoint || "");
+      localDevice = bootstrap.localDevice || {
+        endpoint: "http://127.0.0.1:38200", online: false, requiresPassword: false,
+      };
       return {
         endpoint,
         activeDeviceId,
         devices: knownDevices.map((device) => ({ ...device })),
-        localDevice: bootstrap.localDevice || {
-          endpoint: "http://127.0.0.1:38200", online: false, requiresPassword: false,
-        },
+        localDevice,
       };
     },
     windowReady,
@@ -466,17 +471,34 @@
      *
      * `deviceId` is optional: the login screen of the shared core calls this with
      * only an endpoint, which lands on the native default device.
+     *
+     * `activate` defaults to true. The device rail passes false so that adding a
+     * second Gateway does not steal the target from the session already on screen.
      */
-    async configureTarget(value, deviceId = null) {
+    async configureTarget(value, deviceId = null, { activate = true } = {}) {
       const configured = await invoke("configure_target", {
         endpoint: String(value || ""),
         ...(deviceId ? { deviceId: String(deviceId) } : {}),
+        activate: Boolean(activate),
       });
       endpoint = String(configured.endpoint || "");
-      if (configured.deviceId) activeDeviceId = String(configured.deviceId);
+      if (activate && configured.deviceId) activeDeviceId = String(configured.deviceId);
       return { endpoint, deviceId: configured.deviceId ?? activeDeviceId };
     },
-    /** Switch the target used by device-unaware requests (reloads on success). */
+    /**
+     * Authenticate one device on its own transport.
+     *
+     * The session cookie is captured by that transport, so signing in to a second
+     * Gateway never disturbs the first one's session.
+     */
+    loginDevice(deviceId, password, browserPort = null) {
+      return invoke("login_device", {
+        ...(deviceId ? { deviceId: String(deviceId) } : {}),
+        password: String(password ?? ""),
+        browserPort,
+      });
+    },
+    /** Switch the target used by device-unaware requests, in place. */
     async selectDevice(deviceId) {
       knownDevices = await invoke("set_active_device", { deviceId: String(deviceId) });
       activeDeviceId = String(deviceId);

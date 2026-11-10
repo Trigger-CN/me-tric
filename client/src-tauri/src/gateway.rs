@@ -120,6 +120,43 @@ impl GatewayTransport {
         Ok(endpoint)
     }
 
+    /// Authenticate this transport and keep the returned session cookie.
+    ///
+    /// `Transport` captures `Set-Cookie` into its own jar, so a login here can
+    /// never disturb another device's session. That is what makes adding a
+    /// second, password-protected Gateway possible without signing out of the
+    /// first one.
+    pub async fn login(
+        &self,
+        password: &str,
+        browser_port: Option<u16>,
+    ) -> Result<serde_json::Value, String> {
+        let payload = serde_json::json!({
+            "password": password,
+            "browser_port": browser_port,
+        })
+        .to_string();
+        let response = self
+            .request(GatewayRequest {
+                path: "/api/auth/login".into(),
+                method: "POST".into(),
+                headers: BTreeMap::from([(
+                    "Content-Type".to_owned(),
+                    "application/json".to_owned(),
+                )]),
+                body_text: Some(payload),
+                body_base64: None,
+            })
+            .await?;
+        let body = response.body_text.unwrap_or_default();
+        let mut value: serde_json::Value =
+            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+        if let serde_json::Value::Object(map) = &mut value {
+            map.insert("httpStatus".into(), serde_json::json!(response.status));
+        }
+        Ok(value)
+    }
+
     async fn snapshot(&self) -> Result<(Arc<me_transport::async_http::Transport>, Client), String> {
         let connection = self.connection.read().await;
         let transport = connection

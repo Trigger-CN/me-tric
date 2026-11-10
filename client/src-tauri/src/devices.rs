@@ -51,25 +51,43 @@ impl DeviceRegistry {
         Self::default()
     }
 
-    /// Register (or re-point) a device and mark it active.
+    /// Register (or re-point) a device.
+    ///
+    /// `activate` decides whether this also becomes the device that
+    /// `device_id`-less requests target. Adding a second Gateway must *not*
+    /// steal the target from the one the user is currently looking at, so the
+    /// add flow passes `false` and only an explicit tab click activates.
     ///
     /// Returns the normalized endpoint so the caller can persist it.
-    pub async fn configure(&self, id: &str, endpoint: &str) -> Result<String, String> {
+    pub async fn configure(
+        &self,
+        id: &str,
+        endpoint: &str,
+        activate: bool,
+    ) -> Result<String, String> {
         let id = validate_device_id(id)?.to_owned();
         let endpoint = normalize_endpoint(endpoint)?;
         let transport = GatewayTransport::new(Some(endpoint.clone()))?;
         self.insert(id.clone(), transport).await?;
-        *self.active.write().await = Some(id);
+        if activate {
+            *self.active.write().await = Some(id);
+        }
         Ok(endpoint)
     }
 
-    /// Restore a device without marking it active.
+    /// Restore a device without marking it active and without disturbing a live one.
     ///
-    /// Used at startup to rebuild the registry from remembered devices so a
-    /// background probe can reach them while the UI is still on the login screen.
+    /// Used at startup to rebuild the registry from remembered devices. Skipping
+    /// ids that are already registered matters: a frontend reload re-runs
+    /// `client_bootstrap`, and replacing the transport would throw away that
+    /// device's Noise session and session cookie, forcing a fresh login every time
+    /// the window reloads.
     pub async fn restore(&self, id: &str, endpoint: &str) -> Result<(), String> {
         let id = validate_device_id(id)?.to_owned();
         let endpoint = normalize_endpoint(endpoint)?;
+        if self.entries.read().await.contains_key(&id) {
+            return Ok(());
+        }
         let transport = GatewayTransport::new(Some(endpoint))?;
         self.insert(id, transport).await
     }

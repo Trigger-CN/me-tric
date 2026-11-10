@@ -1,227 +1,347 @@
 /*
- * me-tric device manager styles.
+ * me-tric device rail styles.
  *
  * Loaded after the shared `style.css`/`theme.css`, so it can rely on the same
  * custom properties (--bg, --panel, --text, --accent, ...) and therefore follows
- * every theme and light/dark mode without extra work.
+ * every theme and light/dark mode without per-theme rules.
+ *
+ * Layout note: the rail is pinned to the window's left edge and is *not* inside
+ * `#app`, because `#app` is hidden on the login screen. Instead the two top-level
+ * surfaces (`#login-screen` and `#app`) are inset by the rail width, which keeps
+ * the rail visible and clickable in both states.
  */
 
-.me-tric-device-launcher {
+html.me-tric-has-device-rail {
+  --me-tric-rail-width: 52px;
+}
+
+html.me-tric-has-device-rail #login-screen,
+html.me-tric-has-device-rail #app {
+  left: var(--me-tric-rail-width);
+  right: 0;
+  width: auto;
+}
+
+html.me-tric-has-device-rail .app-shell {
+  grid-template-columns: 250px minmax(0, 1fr);
+}
+
+/* ------------------------------------------------------------------- rail */
+
+.me-tric-device-rail {
+  position: fixed;
+  z-index: 900;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  width: var(--me-tric-rail-width, 52px);
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: calc(var(--client-chrome-height, 38px) + 8px) 0 10px;
+  border-right: 1px solid var(--border);
+  background: var(--sidebar);
+}
+
+.me-tric-device-rail-list {
+  display: flex;
+  min-height: 0;
+  flex: 0 1 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.me-tric-device-rail-list::-webkit-scrollbar {
+  display: none;
+}
+
+.me-tric-device-tab {
+  position: relative;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--muted);
+  font: 700 12px/1 ui-monospace, monospace;
+  letter-spacing: .02em;
+  cursor: pointer;
+  transition: background 90ms linear, color 90ms linear, border-color 90ms linear;
+}
+
+.me-tric-device-tab:hover {
+  border-color: var(--border-bright);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  color: var(--text);
+}
+
+.me-tric-device-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.me-tric-device-tab[data-active="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text);
+}
+
+/* Active-tab marker on the window edge. */
+.me-tric-device-tab[data-active="true"]::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: -9px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  content: "";
+}
+
+.me-tric-device-tab-badge {
+  pointer-events: none;
+}
+
+.me-tric-device-tab-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--sidebar);
+  border-radius: 50%;
+  background: var(--dim, var(--muted));
+  pointer-events: none;
+}
+
+.me-tric-device-tab[data-state="online"] .me-tric-device-tab-dot {
+  background: var(--green);
+}
+
+.me-tric-device-tab[data-state="locked"] .me-tric-device-tab-dot {
+  background: var(--orange);
+}
+
+.me-tric-device-tab[data-state="offline"] .me-tric-device-tab-dot {
+  background: var(--red);
+}
+
+.me-tric-device-rail-add {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 1px dashed var(--border-bright);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  margin-top: 2px;
+}
+
+.me-tric-device-rail-add:hover {
+  border-color: var(--accent);
+  border-style: solid;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+}
+
+.me-tric-device-rail-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.me-tric-device-rail-add svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* --------------------------------------------------------------- dialog */
+
+.me-tric-device-backdrop {
+  position: fixed;
+  z-index: 4200;
+  inset: 0;
   display: grid;
   place-items: center;
+  padding: 20px;
+  background: var(--modal-backdrop-bg, rgb(0 0 0 / 45%));
+  backdrop-filter: blur(5px);
+}
+
+.me-tric-device-backdrop.hidden {
+  display: none;
+}
+
+.me-tric-device-dialog {
+  display: flex;
+  width: min(430px, calc(100vw - 32px));
+  max-height: min(86vh, 720px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-bright);
+  border-radius: 15px;
+  background: var(--panel-2, var(--panel));
+  box-shadow: var(--shadow);
+  color: var(--text);
+}
+
+.me-tric-device-dialog > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 17px;
+  border-bottom: 1px solid var(--border);
+}
+
+.me-tric-device-dialog > header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.me-tric-device-dialog-close {
   width: 32px;
   height: 32px;
   padding: 0;
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: var(--muted, var(--text));
-  cursor: pointer;
-}
-
-.me-tric-device-launcher:hover {
-  background: color-mix(in srgb, var(--text) 10%, transparent);
-  color: var(--text);
-}
-
-.me-tric-device-launcher svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.me-tric-device-panel {
-  position: fixed;
-  z-index: 4000;
-  top: 72px;
-  right: 24px;
-  width: min(420px, calc(100vw - 32px));
-  max-height: calc(100vh - 140px);
-  overflow: auto;
-  padding: 18px;
-  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
-  border-radius: 14px;
-  background: var(--panel, var(--bg));
-  color: var(--text);
-  box-shadow: 0 18px 48px rgb(0 0 0 / 28%);
-}
-
-.me-tric-device-panel.hidden {
-  display: none;
-}
-
-.me-tric-device-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.me-tric-device-header h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.me-tric-device-close {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted, var(--text));
-  font-size: 18px;
+  color: var(--muted);
+  font-size: 21px;
   line-height: 1;
   cursor: pointer;
 }
 
-.me-tric-device-close:hover {
+.me-tric-device-dialog-close:hover {
   background: color-mix(in srgb, var(--text) 10%, transparent);
-}
-
-.me-tric-device-hint {
-  margin: 0 0 14px;
-  color: var(--muted, var(--text));
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.me-tric-device-list {
-  margin: 0 0 14px;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 8px;
-}
-
-.me-tric-device-empty {
-  padding: 12px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-  color: var(--muted, var(--text));
-  font-size: 12px;
-  text-align: center;
-}
-
-.me-tric-device-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--text) 4%, transparent);
-}
-
-.me-tric-device-row[data-active="true"] {
-  outline: 1px solid var(--accent, currentColor);
-}
-
-.me-tric-device-main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-  padding: 4px 6px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.me-tric-device-main:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 8%, transparent);
-}
-
-.me-tric-device-main strong {
-  font-size: 13px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.me-tric-device-endpoint,
-.me-tric-device-probe {
-  font-size: 11px;
-  color: var(--muted, var(--text));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.me-tric-device-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 4px;
-}
-
-.me-tric-device-actions button {
-  padding: 4px 8px;
-  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
-  border-radius: 6px;
-  background: transparent;
   color: var(--text);
-  font-size: 11px;
-  cursor: pointer;
 }
 
-.me-tric-device-actions button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 10%, transparent);
-}
-
-.me-tric-device-actions button.danger:hover:not(:disabled) {
-  border-color: #c42b1c;
-  background: #c42b1c;
-  color: #fff;
-}
-
-.me-tric-device-form {
-  display: grid;
-  gap: 8px;
-}
-
-.me-tric-device-form label {
-  display: grid;
-  gap: 4px;
+.me-tric-device-dialog-hint {
+  margin: 0;
+  padding: 12px 17px 0;
+  color: var(--muted);
   font-size: 12px;
-  color: var(--muted, var(--text));
+  line-height: 1.55;
 }
 
-.me-tric-device-form input {
-  padding: 7px 9px;
-  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
-  border-radius: 8px;
+.me-tric-device-dialog-form {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: auto;
+  padding: 14px 17px 17px;
+}
+
+.me-tric-device-field {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 11px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.me-tric-device-field > small {
+  color: var(--dim, var(--muted));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.me-tric-device-field input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-bright);
+  border-radius: 9px;
   background: var(--bg);
   color: var(--text);
   font-size: 13px;
 }
 
-.me-tric-device-form input:focus {
-  outline: 2px solid var(--accent, currentColor);
+.me-tric-device-field input:focus {
+  outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
 
-.me-tric-device-error {
-  min-height: 16px;
-  margin-top: 8px;
-  color: #c42b1c;
-  font-size: 12px;
+.me-tric-device-field input:read-only {
+  color: var(--muted);
+  border-style: dashed;
 }
 
-@media (max-width: 700px) {
-  .me-tric-device-panel {
-    top: auto;
-    right: 8px;
-    bottom: 8px;
-    left: 8px;
-    width: auto;
-    max-height: 70vh;
+.me-tric-device-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.me-tric-device-remember input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.me-tric-device-dialog-error {
+  min-height: 16px;
+  margin: 6px 0 0;
+  color: var(--red);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.me-tric-device-dialog-form > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (max-width: 620px) {
+  html.me-tric-has-device-rail {
+    --me-tric-rail-width: 46px;
+  }
+
+  .me-tric-device-rail {
+    padding-top: calc(var(--client-chrome-height, 38px) + 6px);
+  }
+
+  .me-tric-device-tab,
+  .me-tric-device-rail-add {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+  }
+}
+
+@media (orientation: portrait) {
+  html.me-tric-has-device-rail {
+    --me-tric-rail-width: 0px;
+  }
+
+  html.me-tric-has-device-rail #login-screen,
+  html.me-tric-has-device-rail #app {
+    left: 0;
+  }
+
+  .me-tric-device-rail {
+    display: none;
   }
 }

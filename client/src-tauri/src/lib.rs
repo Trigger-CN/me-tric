@@ -87,6 +87,31 @@ impl RememberedDeviceStatus {
     }
 }
 
+/// Authenticate one device without disturbing the others.
+///
+/// `configure_target` only registers a transport; a Gateway that requires a
+/// password answers 401 to everything until that transport logs in. Doing the
+/// login here (instead of through the shared core's single login screen) is what
+/// lets a second device join while the first stays connected: the session cookie
+/// lands in this device's own cookie jar.
+#[tauri::command]
+async fn login_device(
+    device_id: Option<String>,
+    password: String,
+    browser_port: Option<u16>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    if password.len() > MAX_REMEMBERED_PASSWORD_BYTES {
+        return Err("密码过长".into());
+    }
+    let (id, transport) = state.devices.resolve(device_id.as_deref()).await?;
+    let mut result = transport.login(&password, browser_port).await?;
+    if let serde_json::Value::Object(map) = &mut result {
+        map.insert("deviceId".into(), serde_json::json!(id));
+    }
+    Ok(result)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ConfiguredTarget {
@@ -734,23 +759,36 @@ async fn client_bootstrap(state: State<'_, AppState>) -> Result<ClientBootstrap,
 ///
 /// `device_id` is optional so the existing single-target frontend keeps working:
 /// it lands on `devices::DEFAULT_DEVICE_ID`.
+///
+/// `activate` defaults to `true`, which is what the shared core's login screen
+/// needs (it is connecting *the* device). Adding a second device from the rail
+/// passes `false` so the workspace the user is looking at keeps its target until
+/// they explicitly click that device's tab.
 #[tauri::command]
 async fn configure_target(
     endpoint: String,
     device_id: Option<String>,
+    activate: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<ConfiguredTarget, String> {
     let device_id = device_id
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| devices::DEFAULT_DEVICE_ID.to_owned());
-    let endpoint = state.devices.configure(&device_id, &endpoint).await?;
+    let activate = activate.unwrap_or(true);
+    let endpoint = state
+        .devices
+        .configure(&device_id, &endpoint, activate)
+        .await?;
 
     let store = state.database.clone();
     let stored_endpoint = endpoint.clone();
     let stored_id = device_id.clone();
     run_blocking(move || {
         store.set_setting(&device_endpoint_key(&stored_id), &stored_endpoint)?;
-        store.set_setting(ACTIVE_DEVICE_SETTING, &stored_id)
+        if activate {
+            store.set_setting(ACTIVE_DEVICE_SETTING, &stored_id)?;
+        }
+        Ok(())
     })
     .await?;
     Ok(ConfiguredTarget {
@@ -781,8 +819,6 @@ async fn remove_device(
     device_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<DeviceStatus>, String> {
-    let key = device_endpoint_key(&device_id);
-
     let key = device_endpoint_key(&device_id);
     let store = state.database.clone();
     let removed_endpoint = run_blocking(move || {
@@ -1166,6 +1202,7 @@ pub fn run() {
             remove_device,
             list_devices,
             probe_device,
+            login_device,
             set_device_preference,
             remember_device,
             forget_device,

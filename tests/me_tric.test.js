@@ -64,6 +64,9 @@ function loadClientRuntime({ platform = "", userAgent = "", download = null } = 
             endpoint: payload.endpoint, password: payload.password, updatedAt: 3, online: true,
           };
           if (command === "forget_device") return null;
+          if (command === "login_device") return {
+            ok: true, authenticated: true, deviceId: payload.deviceId, httpStatus: 200,
+          };
           if (command === "gateway_request") return {
             status: 200,
             headers: { "content-type": "application/json" },
@@ -149,6 +152,7 @@ describe("ME Tric native adapter", () => {
     });
     expect(calls.find((call) => call.command === "configure_target").payload).toEqual({
       endpoint: "https://gateway.example",
+      activate: true,
     });
     expect(runtime.apiPath("/api/ui-projections/main/state", "workspace-one"))
       .toBe("/api/workspaces/workspace-one/ui-projections/main/state");
@@ -676,4 +680,58 @@ test("a pre-aborted native download never starts a native operation", async () =
   controller.abort();
   await expect(runtime.downloadFile("/api/files/downloads/test/content", "test.bin", { signal: controller.signal })).rejects.toHaveProperty("name", "AbortError");
   expect(calls).toHaveLength(0);
+});
+
+test("saving a device can opt out of stealing the active target", async () => {
+  const { runtime, calls } = loadClientRuntime();
+  await runtime.initialize();
+  await runtime.configureTarget("https://lab.example", "lab", { activate: false });
+  expect(calls.find((call) => call.command === "configure_target").payload).toEqual({
+    endpoint: "https://lab.example",
+    deviceId: "lab",
+    activate: false,
+  });
+  // A non-activating add must not change which device the core talks to.
+  expect(runtime.activeDeviceId).toBe("office");
+});
+
+test("logs one device in on its own transport without touching the others", async () => {
+  const { runtime, calls } = loadClientRuntime();
+  await runtime.initialize();
+  await runtime.loginDevice("lab", "lab secret", 443);
+  expect(calls.find((call) => call.command === "login_device").payload).toEqual({
+    deviceId: "lab",
+    password: "lab secret",
+    browserPort: 443,
+  });
+
+  const nativeGateway = readFileSync(join(import.meta.dir, "../client/src-tauri/src/gateway.rs"), "utf8");
+  // The per-device login must ride that device's own request path so its cookie
+  // lands in the transport's own jar instead of a shared one.
+  expect(nativeGateway).toContain("pub async fn login(");
+  expect(nativeGateway).toContain('path: "/api/auth/login".into()');
+  const nativeDevices = readFileSync(join(import.meta.dir, "../client/src-tauri/src/devices.rs"), "utf8");
+  expect(nativeDevices).toContain("pub async fn configure(");
+  expect(nativeDevices).toContain("activate: bool,");
+});
+
+test("the device rail is a left-hand column with an add button", () => {
+  const rail = readFileSync(join(import.meta.dir, "../client/device-manager.js"), "utf8");
+  // Tabs must render from the native roster, not from the core's login screen.
+  expect(rail).toContain('const RAIL_ID = "me-tric-device-rail"');
+  expect(rail).toContain('data-device-action="add"');
+  expect(rail).toContain('data-device-action="activate"');
+  expect(rail).toContain("document.body.append(buildRail())");
+  // Every switch must go through the native target, never through a reload.
+  expect(rail).not.toContain("location.reload");
+  expect(rail).toContain('invoke("set_active_device"');
+  // A device with a remembered password must be switchable without a dialog.
+  expect(rail).toContain("loginQuietly(");
+
+  const css = readFileSync(join(import.meta.dir, "../client/device-manager.css"), "utf8");
+  expect(css).toContain("--me-tric-rail-width: 52px;");
+  expect(css).toContain("position: fixed;");
+  expect(css).toContain("left: var(--me-tric-rail-width);");
+  expect(css).toContain(".me-tric-device-rail {");
+  expect(css).toContain(".me-tric-device-backdrop {");
 });
