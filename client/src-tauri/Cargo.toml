@@ -1,0 +1,41 @@
+[package]
+name = "me-tric"
+version = "0.1.0"
+description = "Desktop client for ME Gateway with multi-device management and detailed agent insight"
+authors = ["me-tric contributors"]
+license = "MIT"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+name = "me_tric_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+base64 = "0.22.1"
+flate2 = "1.1.9"
+me-transport = { path = "../../transport", features = ["async"] }
+log = "0.4"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "socks", "stream", "system-proxy"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.11.3", features = ["macos-private-api"] }
+tokio = { version = "1.53", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+tauri-plugin-log = "2"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-ui-kit = { version = "0.3.2", default-features = false, features = ["std", "UIResponder", "UIView", "UIWindow"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
+
+[patch.crates-io]
+tauri-runtime-wry = { path = "../../vendor/tauri-runtime-wry" }

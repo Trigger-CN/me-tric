@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# me-tric — line-ending and binary policy
+#
+# This repository is developed on Windows but its source is shared with an
+# upstream that is checked out with LF. Normalising on commit keeps the working
+# tree native while the history stays stable, and it removes the class of bug
+# that already bit this project twice: assertions in tests/me_tric.test.js and
+# anchor strings in client/build-frontend.js silently failing because a `\n`
+# literal never matched a CRLF checkout.
+# ---------------------------------------------------------------------------
+
+# Default: normalise line endings in the repository, native on checkout.
+* text=auto
+
+# --- Source: always LF in the repo ----------------------------------------
+*.rs        text eol=lf
+*.js        text eol=lf
+*.mjs       text eol=lf
+*.cjs       text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+*.lock      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.svg       text eol=lf
+*.plist     text eol=lf
+*.entitlements text eol=lf
+*.pbxproj   text eol=lf
+*.xcscheme  text eol=lf
+*.xcworkspacedata text eol=lf
+*.xcconfig  text eol=lf
+*.storyboard text eol=lf
+*.patch     text eol=lf
+*.sha256    text eol=lf
+*.sh        text eol=lf
+
+# --- Windows platform files: CRLF is required -----------------------------
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# --- Binary: never diff, never mangle -------------------------------------
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.icns      binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.otf       binary
+*.wasm      binary
+*.zip       binary
+*.gz        binary
+*.7z        binary

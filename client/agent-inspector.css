@@ -1,0 +1,277 @@
+/*
+ * me-tric agent inspector styles.
+ *
+ * Same convention as device-manager.css: only theme custom properties, so every
+ * theme and light/dark mode works without per-theme rules.
+ */
+
+.me-tric-agent-launcher {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted, var(--text));
+  cursor: pointer;
+}
+
+.me-tric-agent-launcher:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+
+.me-tric-agent-launcher svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.me-tric-agent-panel {
+  position: fixed;
+  z-index: 4000;
+  top: 72px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100vh - 140px);
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  border-radius: 14px;
+  background: var(--panel, var(--bg));
+  color: var(--text);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 28%);
+  overflow: hidden;
+}
+
+.me-tric-agent-panel.hidden {
+  display: none;
+}
+
+.me-tric-agent-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 10px;
+}
+
+.me-tric-agent-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.me-tric-agent-subtitle {
+  font-size: 11px;
+  color: var(--muted, var(--text));
+}
+
+.me-tric-agent-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted, var(--text));
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.me-tric-agent-close:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.me-tric-agent-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 12px;
+}
+
+.me-tric-agent-select,
+.me-tric-agent-filter {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.me-tric-agent-select {
+  flex: 0 1 180px;
+}
+
+.me-tric-agent-filter {
+  flex: 1 1 140px;
+}
+
+.me-tric-agent-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted, var(--text));
+  white-space: nowrap;
+}
+
+.me-tric-agent-toolbar button {
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.me-tric-agent-toolbar button:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.me-tric-agent-card {
+  flex: 0 0 auto;
+  max-height: 40%;
+  overflow: auto;
+  padding: 0 16px 12px;
+  font-size: 12px;
+  color: var(--muted, var(--text));
+}
+
+.me-tric-agent-card table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.me-tric-agent-card th,
+.me-tric-agent-card td {
+  padding: 3px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  text-align: left;
+  vertical-align: top;
+}
+
+.me-tric-agent-card th {
+  width: 32%;
+  font-weight: 500;
+  color: var(--muted, var(--text));
+  white-space: nowrap;
+}
+
+.me-tric-agent-card td {
+  color: var(--text);
+  word-break: break-all;
+}
+
+.me-tric-agent-events {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: auto;
+  padding: 0 16px 16px;
+  font-size: 12px;
+  color: var(--muted, var(--text));
+}
+
+.me-tric-agent-event-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.me-tric-agent-event {
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.me-tric-agent-event-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.me-tric-agent-event-head:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.me-tric-agent-event-kind {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent, currentColor) 18%, transparent);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.me-tric-agent-event-time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+}
+
+.me-tric-agent-event-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.me-tric-agent-event-body {
+  margin: 0;
+  padding: 8px 10px 10px;
+  max-height: 240px;
+  overflow: auto;
+  border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.me-tric-agent-event-body.hidden {
+  display: none;
+}
+
+.me-tric-agent-error {
+  min-height: 16px;
+  padding: 0 16px 12px;
+  color: #c42b1c;
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .me-tric-agent-panel {
+    top: auto;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+    max-height: 76vh;
+  }
+}

@@ -1,0 +1,227 @@
+/*
+ * me-tric device manager styles.
+ *
+ * Loaded after the shared `style.css`/`theme.css`, so it can rely on the same
+ * custom properties (--bg, --panel, --text, --accent, ...) and therefore follows
+ * every theme and light/dark mode without extra work.
+ */
+
+.me-tric-device-launcher {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted, var(--text));
+  cursor: pointer;
+}
+
+.me-tric-device-launcher:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+
+.me-tric-device-launcher svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.me-tric-device-panel {
+  position: fixed;
+  z-index: 4000;
+  top: 72px;
+  right: 24px;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 140px);
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  border-radius: 14px;
+  background: var(--panel, var(--bg));
+  color: var(--text);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 28%);
+}
+
+.me-tric-device-panel.hidden {
+  display: none;
+}
+
+.me-tric-device-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.me-tric-device-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.me-tric-device-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted, var(--text));
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.me-tric-device-close:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.me-tric-device-hint {
+  margin: 0 0 14px;
+  color: var(--muted, var(--text));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.me-tric-device-list {
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.me-tric-device-empty {
+  padding: 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--muted, var(--text));
+  font-size: 12px;
+  text-align: center;
+}
+
+.me-tric-device-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.me-tric-device-row[data-active="true"] {
+  outline: 1px solid var(--accent, currentColor);
+}
+
+.me-tric-device-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.me-tric-device-main:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.me-tric-device-main strong {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.me-tric-device-endpoint,
+.me-tric-device-probe {
+  font-size: 11px;
+  color: var(--muted, var(--text));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.me-tric-device-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.me-tric-device-actions button {
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.me-tric-device-actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.me-tric-device-actions button.danger:hover:not(:disabled) {
+  border-color: #c42b1c;
+  background: #c42b1c;
+  color: #fff;
+}
+
+.me-tric-device-form {
+  display: grid;
+  gap: 8px;
+}
+
+.me-tric-device-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted, var(--text));
+}
+
+.me-tric-device-form input {
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.me-tric-device-form input:focus {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: -1px;
+}
+
+.me-tric-device-error {
+  min-height: 16px;
+  margin-top: 8px;
+  color: #c42b1c;
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .me-tric-device-panel {
+    top: auto;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+    max-height: 70vh;
+  }
+}
