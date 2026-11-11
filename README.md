@@ -19,6 +19,7 @@ me-tric/
 │   ├── client.css             # 客户端专属样式
 │   ├── device-manager.{js,css}
 │   ├── agent-inspector.{js,css}
+│   ├── tool-diff.{js,css}     # 工具卡片的文件修改 diff
 │   └── build-frontend.js      # 把 frontend/ + client/ + vendor 装配成 frontend-dist/
 ├── frontend/                  # 共享权威前端核心（来自 me-s 的 src/webui，逐字节复制）
 ├── transport/                 # Noise 加密 HTTP 传输层（me-transport crate）
@@ -39,6 +40,7 @@ me-tric/
 | --- | --- | --- |
 | `globalThis.MeFrontendRuntime` 钩子 | `client/client-runtime.js` | 需要影响共享核心行为的改动（fetch、endpoint、capabilities、偏好存储……） |
 | 独立脚本，在 `app.js` 之后加载 | `client/device-manager.js`、`client/agent-inspector.js` | 新增独立 UI（浮层面板），不侵入共享 DOM 渲染模型 |
+| 包裹共享全局对象，在 `app.js` **之前**加载 | `client/tool-diff.js` | 需要改变共享核心渲染结果的改动（工具卡片内容）；`app.js` 在调用时才解析 `MeToolPresenters`，卡片构建器则在 `DOMContentLoaded` 后包裹 |
 
 `build-frontend.js` 里三张资产表（`sharedAssets` / `clientAssets` / `vendorAssets`）就是这个边界：新增功能模块只往 `clientAssets` 里加一行。
 
@@ -88,13 +90,13 @@ cargo build            # 或 bunx @tauri-apps/cli@2.11.3 build
 
 1. 清空并重建 `client/frontend-dist/`。
 2. 从 `frontend/` 复制共享核心（`app.js`、`style.css`、主题、Markdown、transcript、工具渲染、图库、文件管理、终端、远程控制）。
-3. 从 `client/` 复制客户端资源（`client-runtime.js` → `runtime.js`、`client.css`、两个新模块及样式、图标、阴影窗口）。
+3. 从 `client/` 复制客户端资源（`client-runtime.js` → `runtime.js`、`client.css`、两个新模块与 diff 模块及其样式、图标、阴影窗口）。
 4. 从 `frontend/vendor/` 复制 markdown-it / KaTeX / xterm，并把 KaTeX 字体搬到 `fonts/`。
 5. 改写 `index.html`：
    - 标题 `ME` → `ME Tric`
    - **删除** `<script src="/transport.js"></script>`
-   - 在 `/theme.css` 之后插入三份客户端样式表
-   - 在 `/app.js` **之前**插入 `agent-inspector.js` 与 `device-manager.js`
+   - 在 `/theme.css` 之后插入四份客户端样式表
+   - 在 `/app.js` **之前**插入 `agent-inspector.js`、`device-manager.js` 与 `tool-diff.js`（后者必须排在 `tool-presenters.js` 之后）
    - 登录页文案改为"输入服务地址和访问密码。"
 6. 逐条断言，任一失败即抛 `me-tric frontend assembly failed: <原因>`。
 
@@ -104,12 +106,16 @@ cargo build            # 或 bunx @tauri-apps/cli@2.11.3 build
 
 ## 3. 运行时架构
 
-```
 frontend-dist/index.html
   ├── runtime.js             ← client-runtime.js：安装 globalThis.MeFrontendRuntime
   ├── agent-inspector.js     ← 面板 2（依赖 MeFrontendRuntime）
   ├── device-manager.js      ← 面板 1（直接调用 Tauri invoke）
-  └── app.js                 ← 共享核心，原封不动
+  ├── tool-presenters.js     ← 共享核心：工具卡片注册表 globalThis.MeToolPresenters
+  ├── tool-diff.js           ← 包裹 MeToolPresenters + 卡片构建器，内联文件修改 diff
+  └── app.js                 ← 共享核心，原封不动（运行时才解析 MeToolPresenters）
+```
+
+`tool-diff.js` 是唯一一个"改变共享核心渲染结果"的模块。它不碰 `app.js`：共享核心在每次渲染工具卡片时才去读 `globalThis.MeToolPresenters`，因此在它之前替换这个冻结对象就能生效；卡片构建器（`createMessageNode` / `updateToolCardNode`）要等 `app.js` 执行后才有，所以在 `DOMContentLoaded` 时再包一次。装配脚本对此有三条顺序断言（`tool-presenters.js` < `tool-diff.js` < `app.js`）。
 ```
 
 ### 数据出口只有一个
@@ -147,7 +153,7 @@ frontend-dist/index.html
 
 ---
 
-## 4. 两个新面板
+## 4. 两个新面板与一个渲染包装
 
 ### 设备管理（`device-manager.js`）
 
@@ -167,6 +173,26 @@ frontend-dist/index.html
 - 概览表：标识 / 标题 / 类型 / 父会话 / 编排模式 / EDB / 事件数 / mutation / prompt rev / 输入草稿 rev / API 状态 / 当前轮 / 模型 / 推理强度 / Token 用量 / 上下文 / 上下文分项 / 压缩中 / WorkMap。
 - `仅内部工具` 复选框只显示被投影隐藏的那些事件——这是投影本身给不出的信息。
 - agent 列表是**从 DOM 只读抓取**的（`#agent-list [data-agent-row]` + `.active` / `aria-current`），因为 `app.js` 的 `state` 在模块作用域里没有导出。抓不到就退化为"无 agent"，不抛错。
+
+### 修改 diff（`tool-diff.js`）
+
+对话里的文件编辑卡片原本只显示新内容，而且详情要点开才看得到。`tool-diff.js` 把它变成带行号的双栏 diff（`-` 红底 / `+` 绿底 / 上下文行），覆盖 `File.Edit`、`File.EditBytes`、`File.Create`、`File.Replace`、`File.Append`。
+
+**diff 默认就在卡片里，不用展开。** 它被放在头部下方、`.tool-details` 之外，因此卡片折叠着也能直接看到改了什么；点开详情仍然给出原来的输入/输出 JSON。diff 不会重复出现两次，`.tool-details` 的 HTML 与上游逐字节相同。
+
+做不到“改 `expandedTools`”：那个 Set 在 `app.js` 的模块作用域里，没有导出也没有钩子，而折叠卡片只调 `summarize(name, args)`（拿不到 output），根本不会产生详情。所以改法是包住两个顶层卡片构建器 `createMessageNode` / `updateToolCardNode`（它们在本模块加载时还不存在，所以在 `DOMContentLoaded` / `load` 时重试安装），在渲染完成后的卡片节点里插入一个 `.tool-diff-inline`。这样既覆盖首次渲染，也覆盖“结果后到、卡片被重写”的更新路径。
+
+旧文本从哪来——这是唯一需要解释的地方：
+
+| 来源 | 何时可用 | 可信度 |
+| --- | --- | --- |
+| 同会话中的 `File.Read` 结果（`lines` + hash + `total_lines`） | 编辑前的读取 | 高：只有 hash 与 `previous_hash` **完全相等**才用 |
+| 同会话中的 `File.Create` / `File.Replace` 的 `content` | 整文件写入后 | 中：客户端无法同步算 sha256，按“同路径 + 同行数”推断，并在提示里明说是推断 |
+| 都没有 | — | 删除侧只给真实行号 + “原内容未记录”占位符，**绝不编造** |
+
+这个配对不是碰运气：服务端拒绝未经 `File.Read` 的编辑（`read_required` / `stale_read` / `unread_range`），并在写入前校验 hash，所以读取必然紧邻编辑之前且 hash 一致。
+
+降级行为：编辑进行中、失败、或输出缺失时不产生 diff（卡片与上游逐字节一致）；单卡片最多渲染 400 行；`File.EditBytes` 按字节计数，不假装是行 diff。
 
 ---
 
@@ -198,7 +224,7 @@ frontend-dist/index.html
 bun test tests/me_tric.test.js
 ```
 
-16 项测试，覆盖：
+30 项测试（`30 pass, 0 fail`），覆盖：
 
 - 原生 UTF-8 JSON 响应 + 前端静态资源仍走浏览器 `fetch`
 - 就绪门控（`data-me-tric-startup="pending"` → `visibility:hidden` → `windowReady()` 一次性放行）
@@ -211,9 +237,11 @@ bun test tests/me_tric.test.js
 - 记住设备的增删与在线状态
 - macOS 关闭=隐藏、Reopen=恢复而非新开窗口
 - page-close JSON beacon 走原生传输
-- 前端装配（`frontend/` 来源、新模块注册、`/transport.js` 必须 absent）
+- 前端装配（`frontend/` 来源、新模块注册、`/transport.js` 必须 absent、`tool-diff.js` 的加载顺序）
 - 版本一致性（`package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 全为 `0.1.0`）
 - 下载取消的注册时序与预取消
+- 设备列左栏、非激活保存不抢 target
+- **文件修改 diff**：有 `File.Read` 时渲染真实删除行；无来源时只给行号不编造内容；hash 不匹配的旧读取必须被拒绝；编辑失败/进行中不产生 diff；`.tool-details` 与上游逐字节一致；整文件写入与字节编辑各自的口径；diff 插在卡片头部与详情之间（折叠状态也可见、重复同步不堆叠、点击不切换卡片）；两个卡片构建器只包一次；反复观察同一份写入文本不会把已验证的读取挤出缓存
 
 > 测试顶部把 `readFileSync` 包了一层，统一 `\r\n` → `\n`。仓库在 Windows 上以 CRLF 检出，而多处断言写的是 `\n`。上游 `me-s` 在同一台机器上跑自己的测试套件会有 3 个失败，原因正是这个；本项目通过归一化解决。
 

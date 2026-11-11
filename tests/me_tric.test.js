@@ -735,3 +735,400 @@ test("the device rail is a left-hand column with an add button", () => {
   expect(css).toContain(".me-tric-device-rail {");
   expect(css).toContain(".me-tric-device-backdrop {");
 });
+
+// ---- file-edit diffs ------------------------------------------------------
+//
+// `client/tool-diff.js` decorates the shared core's `MeToolPresenters`. The
+// interesting behaviour is the *round trip*: a `File.Read` renders, and only
+// then can a later `File.Edit` produce real removed text. These tests drive that
+// sequence through the same public entry points `app.js` uses.
+
+function loadToolDiff() {
+  const read = (name) => readFileSync(join(import.meta.dir, `../frontend/${name}`), "utf8");
+  const sandbox = {};
+  new Function("globalThis", `${read("tool-presenters.js")}\n`)(sandbox);
+  const diffSource = readFileSync(join(import.meta.dir, "../client/tool-diff.js"), "utf8");
+  new Function("globalThis", diffSource)(sandbox);
+  return {
+    presenters: sandbox.MeToolPresenters,
+    diff: sandbox.MeTricToolDiff,
+    sandbox,
+  };
+}
+
+/** The shape `app.js::toolPresentationOutput()` hands to the presenters. */
+function toolOutput(state, value) {
+  return {
+    text: "",
+    updates: [],
+    result: { state, exitCode: null, value, rawDetail: JSON.stringify(value) },
+  };
+}
+
+const READ_SOURCE = [
+  "const alpha = 1;",
+  "const beta = 2;",
+  "",
+  "export function total() {",
+  "  return alpha + beta;",
+  "}",
+  "",
+  "export const label = \"sum\";",
+];
+
+/** The successful `File.Read` payload, before it is wrapped as tool output. */
+function readValue(lines, { hash = "aaaaaaaa", total } = {}) {
+  const map = {};
+  lines.forEach((text, index) => { map[String(index + 1).padStart(2, "0")] = text; });
+  return {
+    path: "src/sum.js",
+    lines: map,
+    editable_ranges: [{ start_line: 1, end_line: lines.length }],
+    start_line: 1,
+    end_line: lines.length,
+    total_lines: total ?? lines.length,
+    eof: true,
+    truncated: false,
+    hash,
+    size: 120,
+    encoding: "utf-8",
+    encoding_confidence: 1,
+    bom: false,
+  };
+}
+
+function readOutput(lines, options) {
+  return toolOutput("succeeded", readValue(lines, options));
+}
+
+/** The `File.Edit` output for deleting line 1 of the read source. */
+function editValue(overrides = {}) {
+  return {
+    path: "src/sum.js",
+    operation: "edited",
+    previous_hash: "aaaaaaaa",
+    previous_total_lines: READ_SOURCE.length,
+    total_lines: READ_SOURCE.length - 1,
+    previous_size: 120,
+    size: 105,
+    encoding: "utf-8",
+    edit_results: [{ index: 0, state: "succeeded", operation: "delete", selected_lines: 1, new_line_count: 0, replacement_bytes: 0, start_line: 1, end_line: 1 }],
+    tip: "",
+    ...overrides,
+  };
+}
+
+/** Just enough element/ownerDocument behaviour to exercise `syncInlineDiff`. */
+function makeElement(tagName) {
+  const element = {
+    tagName: String(tagName).toUpperCase(),
+    className: "",
+    innerHTML: "",
+    children: [],
+    listeners: [],
+    parent: null,
+    append(child) {
+      child.parent = element;
+      element.children.push(child);
+      return child;
+    },
+    after(child) {
+      const parent = element.parent;
+      if (!parent) return;
+      parent.children.splice(parent.children.indexOf(element) + 1, 0, child);
+      child.parent = parent;
+    },
+    remove() {
+      const parent = element.parent;
+      if (!parent) return;
+      parent.children.splice(parent.children.indexOf(element), 1);
+      element.parent = null;
+    },
+    addEventListener(type, listener) { element.listeners.push({ type, listener }); },
+    querySelector(selector) {
+      const match = /^:scope > \.([\w-]+)$/.exec(selector);
+      if (!match) return null;
+      const wanted = match[1];
+      return element.children.find((child) => child.className.split(/\s+/).includes(wanted)) || null;
+    },
+  };
+  return element;
+}
+
+/** A collapsed tool card: header, then the details the core owns. */
+function makeCard() {
+  const card = makeElement("div");
+  card.className = "tool-card succeeded";
+  card.ownerDocument = { createElement: (tagName) => makeElement(tagName) };
+  card.append(makeElement("div")).className = "tool-header";
+  card.append(makeElement("div")).className = "tool-details";
+  return card;
+}
+
+/** The tool record `app.js` holds, whose result detail is JSON text. */
+function editTool(id = "call-1") {
+  return {
+    id,
+    name: "File.Edit",
+    args: { path: "src/sum.js", edits: [{ operation: "delete", start_line: 1, end_line: 1 }] },
+    result: { state: "succeeded", exitCode: null, detail: JSON.stringify(editValue()) },
+  };
+}
+
+const CARD_CHILDREN = ["tool-header", "tool-diff-inline", "tool-details"];
+
+test("a file edit shows real removed text once the read is known", () => {
+  const { presenters, diff } = loadToolDiff();
+  // The core renders every tool card through imageAttachments, which is where a
+  // File.Read output becomes available to a later edit.
+  presenters.imageAttachments("File.Read", readOutput(READ_SOURCE));
+
+  const args = {
+    path: "src/sum.js",
+    edits: [
+      { operation: "replace", start_line: 5, end_line: 5, new_lines: ["  return alpha - beta;"] },
+      { operation: "delete", start_line: 7, end_line: 7 },
+    ],
+  };
+  const output = toolOutput("succeeded", {
+    path: "src/sum.js",
+    operation: "edited",
+    previous_hash: "aaaaaaaa",
+    previous_total_lines: READ_SOURCE.length,
+    total_lines: READ_SOURCE.length - 2,
+    previous_size: 120,
+    size: 121,
+    encoding: "utf-8",
+    edit_results: [
+      { index: 0, state: "succeeded", operation: "replace", selected_lines: 1, new_line_count: 1, replacement_bytes: 22, start_line: 5, end_line: 5 },
+      { index: 1, state: "succeeded", operation: "delete", selected_lines: 1, new_line_count: 0, replacement_bytes: 0, start_line: 7, end_line: 7 },
+    ],
+    tip: "",
+  });
+
+  const details = presenters.describe("File.Edit", args, output);
+  expect(details.diff).toBeDefined();
+  expect(details.diff.added).toBe(1);
+  expect(details.diff.removed).toBe(2);
+  expect(details.diff.missing).toBe(0);
+
+  const html = diff.diffBlockFor("File.Edit", args, output);
+  expect(html).toContain("tool-diff-block");
+  // The removed lines are the real ones, recovered from the File.Read result.
+  expect(html).toContain("  return alpha + beta;");
+  expect(html).toContain("  return alpha - beta;");
+  expect(html).toContain('<span class="tool-diff-mark">-</span>');
+  expect(html).toContain('<span class="tool-diff-mark">+</span>');
+  // Unchanged neighbours appear as context, not as changes.
+  expect(html).toContain("tool-diff-context");
+  // The details block is not where the diff lives: the card puts this same
+  // block under its header so the diff never needs a click.
+  expect(presenters.renderDetails(details)).not.toContain("tool-diff-block");
+});
+
+test("a file edit without any known original still shows correct line numbers", () => {
+  const { presenters, diff } = loadToolDiff();
+  const args = {
+    path: "src/unknown.js",
+    edits: [{ operation: "replace", start_line: 12, end_line: 12, new_lines: ["replacement"] }],
+  };
+  const output = toolOutput("succeeded", {
+    path: "src/unknown.js",
+    previous_hash: "ffffffff",
+    previous_total_lines: 40,
+    total_lines: 40,
+    previous_size: 900,
+    size: 903,
+    encoding: "utf-8",
+    edit_results: [{ index: 0, state: "succeeded", operation: "replace", selected_lines: 1, new_line_count: 1, replacement_bytes: 11, start_line: 12, end_line: 12 }],
+    tip: "",
+  });
+
+  // No invented content: the removed line is a placeholder with its real number.
+  const details = presenters.describe("File.Edit", args, output);
+  expect(details.diff.missing).toBe(1);
+  expect(details.diff.removed).toBe(1);
+  expect(details.diff.added).toBe(1);
+  const html = diff.diffBlockFor("File.Edit", args, output);
+  expect(html).toContain("原内容未记录");
+  expect(html).toContain("本会话中没有该文件的原始内容");
+  expect(html).toContain('<span class="tool-diff-line-no">12</span>');
+});
+
+test("a stale read hash is never reused as the edit's old side", () => {
+  const { presenters, diff } = loadToolDiff();
+  presenters.imageAttachments("File.Read", readOutput(READ_SOURCE, { hash: "aaaaaaaa" }));
+  const args = { path: "src/sum.js", edits: [{ operation: "delete", start_line: 1, end_line: 1 }] };
+  const output = toolOutput("succeeded", editValue({
+    previous_hash: "bbbbbbbb", // a different revision than the one we read
+  }));
+  // Same line count, but the hash proves it is a different revision: refuse.
+  const details = presenters.describe("File.Edit", args, output);
+  expect(details.diff.missing).toBe(1);
+  expect(diff.diffBlockFor("File.Edit", args, output)).toContain("原内容未记录");
+});
+
+test("a failed or still-running edit gets no diff at all", () => {
+  const { presenters, diff } = loadToolDiff();
+  presenters.imageAttachments("File.Read", readOutput(READ_SOURCE));
+  const args = { path: "src/sum.js", edits: [{ operation: "delete", start_line: 1, end_line: 1 }] };
+
+  const failedOutput = toolOutput("failed", { message: "conflict", code: "conflict" });
+  expect(presenters.describe("File.Edit", args, failedOutput).diff).toBeUndefined();
+  expect(diff.diffBlockFor("File.Edit", args, failedOutput)).toBe("");
+
+  // No result yet: the card keeps exactly what the shared core produced.
+  const runningArgs = {
+    path: "src/sum.js",
+    edits: [{ operation: "replace", start_line: 2, end_line: 2, new_lines: ["const beta = 3;"] }],
+  };
+  const running = presenters.describe("File.Edit", runningArgs, undefined);
+  expect(running.diff).toBeUndefined();
+  expect(diff.diffBlockFor("File.Edit", runningArgs, undefined)).toBe("");
+  const html = presenters.renderDetails(running);
+  expect(html).not.toContain("tool-diff-block");
+  expect(html).toContain("修改 1 的新内容");
+});
+
+test("whole-file writes diff against the content that produced them", () => {
+  const { presenters, diff } = loadToolDiff();
+  const createArgs = { path: "notes/todo.md", content: "# Todo\n- one\n- two\n", encoding: "utf-8" };
+  const createOutput = toolOutput("succeeded", {
+    path: "notes/todo.md", operation: "created", hash: "cccccccc", size: 22,
+    encoding: "utf-8", encoding_confidence: 1, bom: false,
+  });
+  const created = presenters.describe("File.Create", createArgs, createOutput);
+  expect(created.diff.kind).toBe("create");
+  // "# Todo\n- one\n- two\n" is three terminated lines, not four.
+  expect(created.diff.added).toBe(3);
+
+  // A later replace of that same file can show the created lines as removed,
+  // because the create cached its content by path.
+  const replaceArgs = { path: "notes/todo.md", content: "# Todo\n- one\n", encoding: "utf-8" };
+  const replaceOutput = toolOutput("succeeded", {
+    path: "notes/todo.md", operation: "replaced", previous_hash: "cccccccc",
+    hash: "dddddddd", size: 13, encoding: "utf-8", encoding_confidence: 1, bom: false,
+  });
+  const replaced = presenters.describe("File.Replace", replaceArgs, replaceOutput);
+  expect(replaced.diff.kind).toBe("replace");
+  expect(replaced.diff.removed).toBe(3);
+  expect(replaced.diff.added).toBe(2);
+  expect(diff.diffBlockFor("File.Replace", replaceArgs, replaceOutput)).toContain("- two");
+});
+
+test("byte edits are reported in bytes and never pretend to be line diffs", () => {
+  const { presenters, diff } = loadToolDiff();
+  const args = {
+    path: "assets/logo.bin",
+    edits: [{ target_offset: 4, target_length: 2, data: "de ad be ef" }],
+  };
+  const output = toolOutput("succeeded", {
+    path: "assets/logo.bin", previous_hash: "eeeeeeee", hash: "ffffffff",
+    previous_size: 20, size: 22, encoding: "binary", encoding_confidence: 1, bom: false,
+    edit_results: [{ index: 0, kind: "replace", target_offset: 4, selected_bytes: 2, replacement_bytes: 4 }],
+  });
+  const details = presenters.describe("File.EditBytes", args, output);
+  expect(details.diff.kind).toBe("bytes");
+  expect(details.diff.added).toBe(4);
+  expect(details.diff.removed).toBe(2);
+  const html = diff.diffBlockFor("File.EditBytes", args, output);
+  expect(html).toContain("偏移 4");
+  expect(html).toContain("de ad be ef");
+  expect(html).toContain("字节级修改");
+});
+
+test("the details block is the core's own markup, for file edits and plain tools alike", () => {
+  const { presenters, diff } = loadToolDiff();
+  const core = {};
+  new Function("globalThis", `${readFileSync(join(import.meta.dir, "../frontend/tool-presenters.js"), "utf8")}\n`)(core);
+  presenters.imageAttachments("File.Read", readOutput(READ_SOURCE));
+  const editDetails = presenters.describe("File.Edit",
+    { path: "src/sum.js", edits: [{ operation: "delete", start_line: 1, end_line: 1 }] },
+    toolOutput("succeeded", editValue()));
+  expect(editDetails.diff).toBeDefined();
+  // The diff is rendered outside `.tool-details`, so this markup stays identical to
+  // the upstream core's: the same hunk is never printed in two places.
+  expect(presenters.renderDetails(editDetails)).toBe(core.MeToolPresenters.renderDetails(editDetails));
+  // Keep `diff` used so the destructure above documents intent.
+  expect(typeof diff.diffBlockFor).toBe("function");
+});
+
+test("re-observing the same write never evicts the verified read", () => {
+  const { presenters, diff } = loadToolDiff();
+  presenters.imageAttachments("File.Read", readOutput(READ_SOURCE));
+  const args = { path: "src/sum.js", content: "const alpha = 1;\nconst beta = 2;\n", encoding: "utf-8" };
+  const output = toolOutput("succeeded", { path: "src/sum.js", operation: "replaced", hash: "dddddddd", size: 30 });
+
+  // `syncInlineDiff` observes on every render, and a running card is rendered
+  // repeatedly. Without dedupe each pass would add another candidate for the same
+  // content and eventually push the verified File.Read out of the small cache.
+  for (let pass = 0; pass < 40; pass += 1) diff.observe("File.Replace", args, output);
+
+  // The read is still the edit's old side, by exact hash.
+  const editOutput = toolOutput("succeeded", editValue());
+  const diffModel = diff.model("File.Edit", { path: "src/sum.js", edits: [{ operation: "delete", start_line: 1, end_line: 1 }] }, editOutput);
+  expect(diffModel.missing).toBe(0);
+  expect(diffModel.hunks[0].rows.some((row) => row.kind === "del" && row.text === "const alpha = 1;")).toBe(true);
+});
+
+test("the diff is placed under the card header, so no click is needed", () => {
+  const { presenters, diff } = loadToolDiff();
+  presenters.imageAttachments("File.Read", readOutput(READ_SOURCE));
+  const card = makeCard();
+  const tool = editTool();
+
+  diff.syncInlineDiff(card, tool);
+
+  // The diff sits between the header and the details, so it is already on screen
+  // while the card is still collapsed.
+  expect(card.children.map((child) => child.className)).toEqual(CARD_CHILDREN);
+  expect(card.children[1].innerHTML).toContain("tool-diff-block");
+  expect(card.children[1].innerHTML).toContain("const alpha = 1;");
+
+  // The transcript re-renders running cards; that must not stack up blocks.
+  diff.syncInlineDiff(card, tool);
+  expect(card.children).toHaveLength(CARD_CHILDREN.length);
+
+  // Clicking the diff must not toggle the card, exactly like `.tool-details`.
+  const event = { stopped: false, stopPropagation() { this.stopped = true; } };
+  card.children[1].listeners[0].listener(event);
+  expect(event.stopped).toBe(true);
+
+  // A card with nothing to diff is left exactly as the core built it.
+  const plain = makeCard();
+  diff.syncInlineDiff(plain, { id: "call-9", name: "Terminal.Status", args: { session_id: "a" }, result: { state: "succeeded", detail: "{}" } });
+  expect(plain.children.map((child) => child.className)).toEqual(["tool-header", "tool-details"]);
+});
+
+test("the card builders are wrapped so a landing result gets its diff", () => {
+  const { presenters, diff, sandbox } = loadToolDiff();
+  presenters.imageAttachments("File.Read", readOutput(READ_SOURCE));
+
+  // Stand in for app.js's own top-level builders, which do not exist yet when
+  // this module loads.
+  sandbox.createMessageNode = () => makeCard();
+  diff.installCardWrappers();
+
+  const node = sandbox.createMessageNode({ kind: "tool", tool: editTool("call-2") });
+  expect(node.children.map((child) => child.className)).toEqual(CARD_CHILDREN);
+
+  // Non-tool messages pass through untouched.
+  const plain = sandbox.createMessageNode({ kind: "assistant", content: "hi" });
+  expect(plain.children.map((child) => child.className)).not.toContain("tool-diff-inline");
+
+  // Installing again must not double-wrap the builders.
+  diff.installCardWrappers();
+  const again = sandbox.createMessageNode({ kind: "tool", tool: editTool("call-3") });
+  expect(again.children.filter((child) => child.className === "tool-diff-inline")).toHaveLength(1);
+});
+
+test("the diff module is assembled after the registry it decorates", () => {
+  const build = readFileSync(join(import.meta.dir, "../client/build-frontend.js"), "utf8");
+  expect(build).toContain('["tool-diff.js", "tool-diff.js"]');
+  expect(build).toContain('["tool-diff.css", "tool-diff.css"]');
+  expect(build).toContain('<script src="/tool-diff.js"></script>');
+  expect(build).toContain('<link rel="stylesheet" href="/tool-diff.css">');
+  // Order matters: the module needs the registry to already exist, and app.js
+  // resolves MeToolPresenters at call time, so it must sit between them.
+  expect(build).toContain('html.indexOf("/tool-diff.js") > html.indexOf("/tool-presenters.js")');
+});

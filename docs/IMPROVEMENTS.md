@@ -115,6 +115,35 @@
 
 `me-tric` / `me_tric_lib` / `ME Tric` / `studio.me-tric.desktop` / `me-tric.sqlite3` / `ME_TRIC_*` / `newMeTricWindow:` —— 全部重写，路径依赖修正为 `../../transport` 与 `../../vendor/tauri-runtime-wry`。旧数据目录**不迁移**。
 
+### A11. 工具卡片的修改 diff（`tool-diff.js` / `.css`）
+
+**问题**：共享核心把文件编辑渲染为"修改 N 的新内容"——只有新文本，没有旧文本，看不出改了什么。这不是渲染遗漏，而是**数据在服务端就不存在**：`File.Edit` 的结果只回行数（`selected_lines` / `new_line_count` / `replacement_bytes`）与 `previous_hash`，`default_file_toolbox.py` 刻意不给原文。
+
+**做法**：`client/tool-diff.js` 在 `tool-presenters.js` 之后、`app.js` 之前加载，**替换**（而不是修改）`globalThis.MeToolPresenters`，包裹 `describe` / `renderDetails` / `imageAttachments`：
+
+- `imageAttachments()` 是所有工具卡片都会经过的唯一出口，借此缓存 `File.Read` 的结果（`lines` 映射 + 内容 hash + `total_lines`）。
+- `summarize()` / `describe()` 顺带缓存 `File.Create` / `File.Replace` 的 `content`（整文件写入）。
+- `describe()` 命中 `File.Edit` / `File.EditBytes` / `File.Create` / `File.Replace` / `File.Append` 时，在 `details` 上挂一个 `diff` 模型，供卡片渲染取用。
+
+**为什么旧文本可信**：服务端拒绝“未经 `File.Read` 就编辑”的调用（`read_required` / `stale_read` / `unread_range`），并在写入前校验内容 hash。因此读取必然紧邻编辑之前，且其 hash 等于编辑的 `previous_hash`。**只有 hash 完全匹配才复用该文本**——不匹配时删除侧只显示真实行号加“原内容未记录”占位符，绝不编造内容。整文件写入无法在客户端同步算 sha256，退化为“同路径 + 同行数”的推断匹配，并在提示里**明说这是推断**。
+
+**降级行为**：编辑进行中、失败、或结果缺失时不产生任何 diff，卡片与上游逐字节一致（有测试断言）。行数上限 400 行，超出显示截断提示。
+
+**diff 不需要展开就能看到**：共享核心只为“展开集合”里的卡片渲染详情（`toolCardView` 返回 `details: expanded ? describe(...) : null`），而这个集合 `state.expandedTools` 是 `app.js` 模块作用域的 `Set`，没有导出、没有钩子，外部无法写入。更关键的是：**折叠卡片只调 `summarize(name, args)`，拿不到 output**，所以即使注入状态也生不出 diff。
+
+因此改法是**不碰展开状态**，而是把 diff 放到头部下方、`.tool-details` **之外**，并包住两个顶层卡片构建器：
+
+- `createMessageNode`（首次渲染）与 `updateToolCardNode`（结果后到、卡片被重写）拿到构建完成的卡片节点后，插入一个 `.tool-diff-inline`，位置是 `.tool-header` 之后。
+- 这两个函数在本模块加载时**还不存在**（`app.js` 尚未执行），所以在 `DOMContentLoaded` / `load` 时重试安装；模块底部也先试一次（`app.js` 先加载时立即生效）。
+- 插入前比对上一次写入的 HTML（`WeakMap`），避免正在跑的工具卡片每帧重建 diff；`click` 事件被`stopPropagation`，点 diff 不会收起卡片（与 `.tool-details` 一致）。
+- 因为 diff 不在详情里，`.tool-details` 的 HTML 与上游**逐字节相同**（有测试断言），同一个 hunk 不会印两遍。
+
+被否掉的替代方案：驱动 `state.expandedTools`——那需要修改 `app.js`，违反 `frontend/` 只读约束。
+
+**为什么不读 `/api/events` 回填**：`gateway.rs::validate_proxy_path` 不转发该路径，经 Gateway 连接时不可达；做成 best-effort 会让同一功能在两种部署下表现不一致，不如统一只依赖已渲染的卡片内容。
+
+**构建约束**：`build-frontend.js` 新增两条断言——`tool-diff.js` 必须晚于 `tool-presenters.js`（否则没有可包裹的注册表）且早于 `app.js`（否则核心已捕获旧引用）。
+
 ---
 
 ## B. 计划中（按建议顺序）

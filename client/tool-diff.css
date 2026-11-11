@@ -1,0 +1,117 @@
+/* me-tric file-edit diffs.
+ *
+ * Rendered by `tool-diff.js` inside the shared core's `.tool-block` slot, so it
+ * inherits the existing tool-card typography and only adds what a diff needs:
+ * a monospace, horizontally scrollable, two-gutter grid with tinted rows.
+ *
+ * Colors come from the shared theme variables only, so every built-in theme and
+ * both color modes keep working without per-theme rules. The shared core has no
+ * `--font-*` custom properties (it writes font stacks literally), so the stacks
+ * are repeated here rather than referenced.
+ */
+
+.tool-diff-block {
+  --tool-diff-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --tool-diff-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.tool-diff-block .tool-diff-stats {
+  margin-left: 6px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.tool-diff-added { color: var(--green); }
+.tool-diff-removed { color: var(--red); }
+.tool-diff-muted { color: var(--dim); font-weight: 500; }
+
+.tool-diff-note {
+  margin-bottom: 6px;
+  color: var(--dim);
+  font-family: var(--tool-diff-sans);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tool-diff-scroll {
+  max-height: min(46vh, 430px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+  font-family: var(--tool-diff-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  overscroll-behavior: contain;
+  user-select: text;
+}
+
+.tool-diff-row {
+  display: grid;
+  grid-template-columns: 4.5ch 4.5ch 2ch minmax(0, 1fr);
+  min-width: max-content;
+  white-space: pre;
+}
+
+.tool-diff-row > .tool-diff-line-no {
+  padding: 0 6px;
+  color: var(--dim);
+  text-align: right;
+  user-select: none;
+}
+
+.tool-diff-row > .tool-diff-mark {
+  color: var(--dim);
+  text-align: center;
+  user-select: none;
+}
+
+.tool-diff-row > .tool-diff-text {
+  padding-right: 10px;
+  overflow-wrap: normal;
+}
+
+/* Hunk headers span the whole width: they belong to no side of the diff. */
+.tool-diff-hunk {
+  grid-template-columns: 1fr;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--tool-key);
+}
+
+.tool-diff-hunk:first-child { border-top: 0; }
+.tool-diff-hunk > .tool-diff-mark { display: none; }
+
+.tool-diff-hunk > .tool-diff-text {
+  padding: 2px 8px;
+  font-weight: 600;
+}
+
+.tool-diff-context { color: var(--muted); }
+
+.tool-diff-del { background: color-mix(in srgb, var(--red) 13%, transparent); }
+.tool-diff-del > .tool-diff-mark,
+.tool-diff-del > .tool-diff-line-no { color: var(--red); }
+
+.tool-diff-add { background: color-mix(in srgb, var(--green) 13%, transparent); }
+.tool-diff-add > .tool-diff-mark,
+.tool-diff-add > .tool-diff-line-no { color: var(--green); }
+
+.tool-diff-truncated {
+  padding: 4px 8px;
+  border-top: 1px dashed var(--border);
+  color: var(--dim);
+  font-family: var(--tool-diff-sans);
+  font-size: 12px;
+}
+
+/* Autoshown diff, placed between the card header and the card details. It
+ * mirrors `.tool-details`'s indentation so both blocks line up under the tool
+ * header, and keeps the details disclosure reachable below it. */
+.tool-diff-inline {
+  margin: 7px 0 2px 22px;
+}
+
+@media (max-width: 620px) {
+  .tool-diff-inline { margin-left: 19px; }
+}

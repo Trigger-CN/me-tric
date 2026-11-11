@@ -38,6 +38,8 @@ const clientAssets = [
   ["device-manager.css", "device-manager.css"],
   ["agent-inspector.js", "agent-inspector.js"],
   ["agent-inspector.css", "agent-inspector.css"],
+  ["tool-diff.js", "tool-diff.js"],
+  ["tool-diff.css", "tool-diff.css"],
   ["app-icon.svg", "app-icon.svg"],
   ["window-shadow.html", "window-shadow.html"],
 ];
@@ -72,14 +74,16 @@ const html = sourceHtml
   .replace(/[ \t]*<script src="\/transport\.js"><\/script>\r?\n/, "")
   .replace(
     '<link rel="stylesheet" href="/theme.css">',
-    '<link rel="stylesheet" href="/theme.css">\n  <link rel="stylesheet" href="/client.css">\n  <link rel="stylesheet" href="/device-manager.css">\n  <link rel="stylesheet" href="/agent-inspector.css">',
+    '<link rel="stylesheet" href="/theme.css">\n  <link rel="stylesheet" href="/client.css">\n  <link rel="stylesheet" href="/device-manager.css">\n  <link rel="stylesheet" href="/agent-inspector.css">\n  <link rel="stylesheet" href="/tool-diff.css">',
   )
   .replace("      <p>请输入访问密码。</p>", "      <p>输入服务地址和访问密码。</p>")
   // Feature modules load after the shared core so they can consume MeFrontendRuntime
-  // and the Me* globals that app.js already installed.
+  // and the Me* globals that app.js already installed. `tool-diff.js` comes last:
+  // it wraps `MeToolPresenters`, which only exists once `tool-presenters.js` has run,
+  // and picks up app.js's card builders on DOMContentLoaded.
   .replace(
     '  <script src="/app.js"></script>',
-    '  <script src="/agent-inspector.js"></script>\n  <script src="/device-manager.js"></script>\n  <script src="/app.js"></script>',
+    '  <script src="/agent-inspector.js"></script>\n  <script src="/device-manager.js"></script>\n  <script src="/tool-diff.js"></script>\n  <script src="/app.js"></script>',
   );
 
 // Deterministic assertions: if the upstream entry structure changes, fail loudly
@@ -92,6 +96,12 @@ const checks = [
   [html.includes("/device-manager.js"), "device-manager.js failed to register"],
   [html.includes("/agent-inspector.js"), "agent-inspector.js failed to register"],
   [html.includes("/client.css"), "client.css failed to register"],
+  // The diff wrapper must load after the presenter registry it decorates.
+  [html.indexOf("/tool-diff.js") > html.indexOf("/tool-presenters.js"),
+    "tool-diff.js must load after tool-presenters.js"],
+  [html.indexOf("/tool-diff.js") < html.indexOf("/app.js"),
+    "tool-diff.js must load before app.js so the core sees the wrapped registry"],
+  [html.includes("/tool-diff.css"), "tool-diff.css failed to register"],
 ];
 for (const [ok, message] of checks) {
   if (!ok) throw new Error(`me-tric frontend assembly failed: ${message}`);
