@@ -1559,6 +1559,78 @@ test("a poll with no assistant text keeps the window instead of wiping it", () =
   expect(resumed.grown).toBe(200);
 });
 
+test("a user part scrolling out of the window does not restart the turn", () => {
+  const { panel } = loadDebugPanel();
+  // `app.js` asks for a sliding `projection_window` and the server returns only the
+  // tail (64 parts) or the changed suffix, so the user part scrolls out while the
+  // same turn keeps streaming. `currentTurn` reports `turn: null` then, which must
+  // mean "same turn" rather than "new turn" — otherwise the rate resets mid-turn.
+  const state = (parts) => ({ range: { projections: parts } });
+  const user = { kind: "user", key: "user:1", content: "问题" };
+  const asst = (text) => ({ kind: "assistant", key: "assistant:1:1", content: text });
+  const tool = { kind: "tool", key: "tool:9", tool: { id: "9", name: "File.Read", started: 1 } };
+
+  const full = panel.currentTurn(state([user, asst("a".repeat(100))]));
+  expect(full.turn).toBe("user:1");
+  const slid = panel.currentTurn(state([asst("a".repeat(400))]));
+  expect(slid.turn).toBe(null);
+  expect(slid.chars).toBe(400);
+
+  let rate = panel.nextRate(full, null, 1000);
+  rate = panel.nextRate(panel.currentTurn(state([user, asst("a".repeat(200))])), rate, 2000);
+  expect(rate.rate).toBe(100);
+  // The user part is gone from the window; the measurement must continue. 300
+  // characters over the two seconds since the first sample.
+  rate = panel.nextRate(slid, rate, 3000);
+  expect(rate.turn).toBe("user:1");
+  expect(rate.samples).toHaveLength(3);
+  expect(rate.rate).toBe(150);
+
+  // A window whose newest part is a tool still belongs to the same turn.
+  const toolOnly = panel.currentTurn(state([tool]));
+  expect(toolOnly.turn).toBe(null);
+  expect(toolOnly.hasText).toBe(false);
+  expect(panel.nextRate(toolOnly, rate, 3100).rate).toBe(150);
+});
+
+test("the stream box keeps the last text instead of blanking mid-turn", () => {
+  const { panel, runtime, payloads } = loadDebugPanel();
+  // The status bar counts raw SSE events, so it keeps moving during reasoning and
+  // tool rounds; the box must not blank out in those gaps or it looks broken.
+  const first = syncPayload({ content: "已经输出的内容" });
+  payloads.push(first);
+  return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
+    expect(panel.state.rate.text).toBe("已经输出的内容");
+    // The next poll's window carries only a tool part, exactly as the server sends
+    // a changed-suffix window.
+    const toolOnly = syncPayload({ content: "", tools: [{ id: "t1", name: "File.Read", started: 1 }] });
+    payloads.push(toolOnly);
+    return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
+      expect(panel.state.rate.text).toBe("已经输出的内容");
+      expect(panel.state.rate.chars).toBe("已经输出的内容".length);
+    });
+  });
+});
+
+test("an empty box says why it is empty instead of looking broken", () => {
+  const { panel } = loadDebugPanel();
+  // Reasoning deltas never reach the projection: `model.rs::openai_stream_event`
+  // reads only `/choices/0/delta/content`, so a reasoning-only delta becomes
+  // `Other` and is dropped. The box can only be empty then, and must say so.
+  const streaming = panel.renderStream({ api_state: "Streaming" });
+  expect(streaming).toContain("正在思考或等待首个内容增量");
+  expect(streaming).toContain("推理文本不入投影");
+  // A finished turn has nothing pending, so it must not claim to be waiting.
+  const done = panel.renderStream({ api_state: "Completed" });
+  expect(done).toContain("暂无可见文本");
+  expect(done).not.toContain("正在思考");
+  // Once text exists the placeholder is gone entirely.
+  panel.state.rate.text = "有内容";
+  expect(panel.renderStream({ api_state: "Streaming" })).toContain("有内容");
+  expect(panel.renderStream({ api_state: "Streaming" })).not.toContain("暂无可见文本");
+  panel.state.rate.text = "";
+});
+
 test("a sub-1 rate is shown with a decimal instead of rounding to zero", () => {
   const { panel } = loadDebugPanel();
   // Four characters over ten seconds is a real, slow rate; `Math.round` alone

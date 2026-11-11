@@ -237,6 +237,16 @@
 
 顺带修掉一个潜伏缺陷：`selectedAgentId()` 读的是 `row.dataset.agentId`，但 `app.js::createAgentRow` 发出的是 `data-agent-row`（即 `dataset.agentRow`），所以生产环境恒返回 `null`，“侧边栏优先”这条规则实际是死的（行为上只是退回 `trackedAgentId` 分支，所以一直没暴露）。测试里的 mock 也用了错的字段名，因此没抓住它。
 
+**流式框为空（修复）**：用户反馈“窗口底部的 AI 思考或回复长度增长时，右边栏的流式数据还是空的”。三个独立原因，前一个是服务端限制，后两个是客户端缺陷：
+
+1. **思考文本根本到不了前端（服务端限制，客户端无法修复）。** 底部状态栏的 `↓ N` 是 `api_activity.received_sse_events`——服务端每收到一个 SSE 事件就 `fetch_add(1)`，**包含推理分块**，所以思考阶段它在涨。但 `model.rs::openai_stream_event` 只解析 `/choices/0/delta/content`（`:0403-0406`），完全不读 `reasoning_content` / `reasoning` / `thinking`；只有推理增量的分块在 `:0430-0431` 被归为 `OpenAiStreamEvent::Other` 后**直接丢弃**。`orchestrator.rs:02261` 也只写 `chunk.content`，`UiPartProjection::Assistant`（`ui_projection.rs:0239-0245`）根本没有 reasoning 字段。所以面板无法显示不存在的数据——这不是面板的问题。
+2. **投影窗口滑动被误判成换轮。** `app.js` 发 `projection_window`，服务端只返回尾部（最近 64 条）或变更后缀（`ui_projection.rs:0074-0114`），所以 `user` 部件会在同一轮中途滑出窗口。上一版用 `user` 部件的 `key` 做轮次标识，滑出后标识变成空串，与之前不同 → 视为新轮 → 采样窗口重置。现在 `currentTurn` 在无 `user` 部件时返回 `turn: null`，`nextRate` 把 `null` 理解为“窗口滑动，仍是同一轮”，只有两个**非 null** 且不同的标识才算换轮。
+3. **流式框被整段清空。** 文本取自当前窗口内的 assistant 文本，窗口尾部变成工具部件时就是空串，于是框被清空——这直接造成了“底部在涨、右边框是空的”的观感。现在窗口内无 assistant 文本且未真正换轮时**保留上一段文本**，与采样窗口的保留策略一致。
+
+另外，空框现在会说明原因：`api_state` 为 `Streaming` / `Requesting` 时显示“暂无可见文本：正在思考或等待首个内容增量（服务端只转发 delta.content，推理文本不入投影）”，否则显示“暂无可见文本”。同时修掉了 `render()` 调用 `renderStream()` 漏传 `state` 的问题（否则提示永远不会出现）。
+
+**结论：想要看到思考文本，必须在服务端 `model.rs` 里解析并转发 reasoning 字段，并给 `UiPartProjection::Assistant` 加对应字段——这超出 me-tric 的范围（me-tric 不修改 me-s 服务端）。** 面板只能如实说明“没有可见文本”，不能凭空造出它。
+
 **几个实现细节**：
 
 - 速率按“同一轮”比较：新一轮从零开始，不把上一轮长度当成突发；文本变短时重新起算而不是给出负数。
@@ -250,6 +260,7 @@
 **已接受的残留风险**：
 
 - 采样依赖轮询频率（活跃时 250 ms、空闲时 1000 ms），所以“字符/秒”的采样粒度也受此限制，不是逐 token 精确。
+- **思考（reasoning）内容在服务端就被丢弃，面板永远看不到。** 这是 me-s `model.rs` 的设计，不是本项目的缺陷；面板只能提示“推理文本不入投影”。
 - 侧边栏的排版、滚动与展开动画未经真实窗口实测，只能在 bun 测试里验证纯函数与响应解析。
 - 面板数据不持久化，刷新后从空开始（包括采样次数与速率窗口）。
 - 当前会话依赖侧边栏 `.agent-row.active` 这个 DOM 结构；如果上游改了行标记，面板会退化为“无选中会话”（不采样），而不是默默展示错会话。

@@ -155,6 +155,12 @@
    * which is most of a coding turn — so the window rarely held two samples and the
    * rate stayed null. The turn's assistant text is monotone across those
    * boundaries, so the measurement survives them.
+   *
+   * `turn` is null when no user part is in the window. That is not "a new turn":
+   * `app.js` asks for a sliding `projection_window` and the server returns only the
+   * tail (64 parts) or the changed suffix, so the user part scrolls out while the
+   * same turn keeps streaming. `nextRate` therefore treats null as "same turn as
+   * before" rather than as a boundary, or the rate would reset mid-turn.
    */
   function currentTurn(state) {
     const parts = partsOf(state);
@@ -162,7 +168,7 @@
     for (let index = parts.length - 1; index >= 0; index -= 1) {
       if (parts[index]?.kind === "user") { start = index; break; }
     }
-    const turn = start >= 0 ? String(parts[start].key || `user:${start}`) : "";
+    const turn = start >= 0 ? String(parts[start].key || `user:${start}`) : null;
     const slice = start >= 0 ? parts.slice(start + 1) : parts;
     let text = "";
     let hasText = false;
@@ -185,7 +191,8 @@
    */
   function nextRate(sample, previous, now) {
     const base = previous || {};
-    const turn = sample?.turn ?? base.turn ?? "";
+    // A missing user part means the window scrolled, not that a new turn began.
+    const turn = sample?.turn ?? base.turn ?? null;
     if (!sample?.hasText || sample?.chars == null) {
       return {
         rate: base.rate ?? null,
@@ -196,9 +203,9 @@
       };
     }
     const chars = Math.max(0, toNumber(sample.chars));
-    const sameTurn = base.turn === turn;
-    // A shrinking count means the window scrolled or a part was replaced; the old
-    // samples describe a different suffix, so the difference would be meaningless.
+    const sameTurn = sample?.turn == null || base.turn === sample.turn;
+    // A shrinking count means the old samples describe a different suffix, so the
+    // difference would be meaningless; a null user part must not reset on its own.
     const continuous = sameTurn && chars >= toNumber(base.chars);
     const samples = [...(continuous ? base.samples || [] : []), { at: now, chars }];
     const recent = samples.filter((entry) => now - entry.at <= RATE_WINDOW_MS);
@@ -499,11 +506,24 @@
     return section("输出速度", rows.join("") + note);
   }
 
-  function renderStream() {
+  /**
+   * Why the box can be empty while the status bar is counting: the bar's `↓ N` is
+   * `api_activity.received_sse_events`, a server-side counter of raw SSE events, so
+   * it advances for reasoning deltas too. `model.rs::openai_stream_event` reads only
+   * `/choices/0/delta/content` and turns a reasoning-only delta into
+   * `OpenAiStreamEvent::Other`, so the reasoning text never reaches the projection
+   * and there is nothing for this box to show. Say so rather than look broken.
+   */
+  function renderStream(state) {
     const text = debugState.paused ? debugState.frozenText : debugState.rate.text;
+    const waiting = state?.api_state === "Streaming" || state?.api_state === "Requesting";
+    const placeholder = waiting
+      ? '<span class="me-tric-debug-empty">暂无可见文本：正在思考或等待首个内容增量'
+        + '（服务端只转发 delta.content，推理文本不入投影）</span>'
+      : '<span class="me-tric-debug-empty">暂无可见文本</span>';
     const body = text
       ? `<pre class="me-tric-debug-stream" data-role="stream-text">${escapeHtml(text)}</pre>`
-      : '<pre class="me-tric-debug-stream" data-role="stream-text"><span class="me-tric-debug-empty">等待流式数据…</span></pre>';
+      : `<pre class="me-tric-debug-stream" data-role="stream-text">${placeholder}</pre>`;
     const meta = debugState.paused
       ? '<span class="me-tric-debug-badge">已暂停</span>'
       : "";
@@ -578,7 +598,7 @@
     const markup = {
       overview: renderOverview(payload, state),
       speed: renderSpeed(state),
-      stream: renderStream(),
+      stream: renderStream(state),
       context: renderContext(state),
       tools: renderTools(state),
       cursors: renderCursors(payload, state),
@@ -634,9 +654,15 @@
     const active = isActive(payload, grew);
 
     debugState.snapshot = payload;
+    const switchedTurn = previous.turn != null && next.turn != null && previous.turn !== next.turn;
     debugState.rate = next;
     debugState.rate.active = active;
-    debugState.rate.text = turn.text.slice(-STREAM_TAIL_CHARS);
+    // The window only carries a suffix, so a poll can legitimately arrive with no
+    // assistant part at all (a tool round, or the user part scrolled out). Keeping
+    // the last visible text is what stops the box from blanking mid-turn while the
+    // status bar keeps counting.
+    const keepText = !switchedTurn && turn.text.length === 0 && previous.text;
+    debugState.rate.text = (keepText ? previous.text : turn.text).slice(-STREAM_TAIL_CHARS);
     // Keep the frozen copy current so pausing freezes at the last live text.
     debugState.frozenText = debugState.rate.text;
 
@@ -744,6 +770,7 @@
     latestAssistant,
     currentTurn,
     renderSpeed,
+    renderStream,
     toolRows,
     contextRows,
     nextRate,
