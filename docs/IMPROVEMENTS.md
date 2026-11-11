@@ -184,6 +184,49 @@
 - 非多模态模型会拒绝 `Image.View`，而客户端**在发送前无法知道**模型是否支持图片——这一点没有任何本地信号可查。拒绝只会以工具错误的形式出现在对话里，缩略图不会预警。
 - 本项只能在 bun 测试与装配脚本里验证；缩略图的实际排版、堆叠与滚动未经真实窗口实测。
 
+### A13. 右侧调试侧边栏（`debug-panel.js` / `.css`）
+
+**需求**：底部状态栏已展示模型名、推理强度与 SSE 计数，但看不到实际在发生什么。需要一个可展开/收起的右侧调试侧边栏，展示：接收到的流式数据、token 输出速度、上下文占用明细，以及补充的其他调试信息。
+
+**数据来源（已核实）**：`app.js` 的 `state` 全在模块作用域且无导出，但 `/api/sync` 的响应体里就有全部原料，所以模块再包一层 `MeFrontendRuntime.fetch`，`clone()` 出响应体读 JSON：
+
+| 字段 | 内容 |
+| --- | --- |
+| `projection_states[].range.projections[]` | assistant 流式 `content`、`tool`（含 `started` / `result.finished`）、turn-toolbar |
+| `projection_states[].context` | `total` + `values{system,compact,memory,user,model,tool}` |
+| `projection_states[].api_state / api_usage / model / effort / turn_state` | 概览行 |
+| `projection_states[].revision / count / last_event_id / changed_from / source_event_count` | 事件与游标 |
+| `api_activity {active, received_sse_events}` | 本轮 SSE |
+| `snapshot.agents[].edb_size_bytes` | EDB 体积 |
+
+**面板分区**：概览 / 输出速度 / 流式数据文本框 / 上下文占用 / 工具调用 / 事件与游标。头部有暂停、清空、收起；右上角悬浮按钮展开收起，展开状态存 localStorage。
+
+**实测与估算的界线（这是本项最重要的诚实约束）**：
+
+| 指标 | 性质 |
+| --- | --- |
+| SSE 事件数、响应体积、上下文分项、工具耗时、字符/秒 | 实测 |
+| tok/s | **估算**：字符数 ÷ 4 |
+| 服务端用量（`api_usage`） | 实测，但只在 API 完成后才存在 |
+
+**为什么不能实测 token/s**：`ui_projection.rs` 里 `api_usage` 仅在 `ApiState::Completed` 与 `Interrupted` 两个分支被赋值（:0868、:0888），`ModelChanged` 与压缩完成时还会置 `None`。流式过程中它恒为 `null`。同理 `received_sse_events` 在每次 API 调用开始时清零（orchestrator.rs `ApiActivity::begin`），所以它是“本轮”而不是“累计”。面板对两者都按真实语义措辞，不把估算包装成实测。
+
+**几个实现细节**：
+
+- 速率按“同一个 assistant key”比较：新一轮从零开始，不把上一轮长度当成突发；文本变短（重写）时归零而不是负数。
+- 只采样 `/api/sync`：注意 `app.js` 先调 `apiPath()` 把它改写成 `/api/workspaces/<id>/sync`，正则必须同时匹配两种形式——否则在生产环境下会静默永不采样（实现时正是这个 bug，测试才抳住）。
+- 未完成的工具不给耗时，显示“进行中”，不编造数字。
+- 面板展开时给 `.workspace` 加右内边距而不是盖住对话；窗口窄于 1000px 时改为覆盖式。
+- 状态栏的 `⇣ 12.3 KB · 42 SSE` 是本模块自己插入的 span，因为 `frontend/` 只读。
+- 与 `paste-image.js` 共存：两者都用 `Object.create` 链式包裹，各覆写 `fetch` 并委派给上一层。
+
+**已接受的残留风险**：
+
+- 采样依赖轮询频率（活跃时 250 ms、空闲时 1000 ms），所以“字符/秒”的采样粒度也受此限制，不是逐 token 精确。
+- 侧边栏的排版、滚动与展开动画未经真实窗口实测，只能在 bun 测试里验证纯函数与响应解析。
+- 面板数据不持久化，刷新后从空开始（包括采样次数与速率窗口）。
+
+
 
 ---
 

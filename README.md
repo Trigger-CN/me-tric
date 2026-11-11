@@ -21,6 +21,7 @@ me-tric/
 │   ├── agent-inspector.{js,css}
 │   ├── tool-diff.{js,css}     # 工具卡片的文件修改 diff
 │   ├── paste-image.{js,css}   # 输入框粘贴图片：上传到 .me 并附路径
+│   ├── debug-panel.{js,css}   # 右侧调试侧边栏：流式数据、速率、上下文、工具
 │   └── build-frontend.js      # 把 frontend/ + client/ + vendor 装配成 frontend-dist/
 ├── frontend/                  # 共享权威前端核心（来自 me-s 的 src/webui，逐字节复制）
 ├── transport/                 # Noise 加密 HTTP 传输层（me-transport crate）
@@ -41,7 +42,7 @@ me-tric/
 | --- | --- | --- |
 | `globalThis.MeFrontendRuntime` 钩子 | `client/client-runtime.js` | 需要影响共享核心行为的改动（fetch、endpoint、capabilities、偏好存储……） |
 | 独立脚本，在 `app.js` 之后加载 | `client/device-manager.js`、`client/agent-inspector.js` | 新增独立 UI（浮层面板），不侵入共享 DOM 渲染模型 |
-| 包裹共享全局对象，在 `app.js` **之前**加载 | `client/tool-diff.js`、`client/paste-image.js` | 需要改变共享核心行为的改动；`app.js` 在调用时才解析 `MeToolPresenters`，而 `MeFrontendRuntime` 则是加载时读取一次，所以必须在它之前替换 |
+| 包裹共享全局对象，在 `app.js` **之前**加载 | `client/tool-diff.js`、`client/paste-image.js`、`client/debug-panel.js` | 需要改变共享核心行为的改动；`app.js` 在调用时才解析 `MeToolPresenters`，而 `MeFrontendRuntime` 则是加载时读取一次，所以必须在它之前替换（后两个模块通过 `Object.create` 链式叠加，互不覆盖） |
 
 `build-frontend.js` 里三张资产表（`sharedAssets` / `clientAssets` / `vendorAssets`）就是这个边界：新增功能模块只往 `clientAssets` 里加一行。
 
@@ -96,8 +97,8 @@ cargo build            # 或 bunx @tauri-apps/cli@2.11.3 build
 5. 改写 `index.html`：
    - 标题 `ME` → `ME Tric`
    - **删除** `<script src="/transport.js"></script>`
-   - 在 `/theme.css` 之后插入五份客户端样式表
-   - 在 `/app.js` **之前**插入 `agent-inspector.js`、`device-manager.js`、`tool-diff.js`（必须排在 `tool-presenters.js` 之后）与 `paste-image.js`（必须早于 `app.js` 读取 `MeFrontendRuntime`）
+   - 在 `/theme.css` 之后插入六份客户端样式表
+   - 在 `/app.js` **之前**插入 `agent-inspector.js`、`device-manager.js`、`tool-diff.js`（必须排在 `tool-presenters.js` 之后）、`paste-image.js` 与 `debug-panel.js`（后两者必须早于 `app.js` 读取 `MeFrontendRuntime`）
    - 登录页文案改为"输入服务地址和访问密码。"
 6. 逐条断言，任一失败即抛 `me-tric frontend assembly failed: <原因>`。
 
@@ -114,10 +115,11 @@ frontend-dist/index.html
   ├── tool-presenters.js     ← 共享核心：工具卡片注册表 globalThis.MeToolPresenters
   ├── tool-diff.js           ← 包裹 MeToolPresenters + 卡片构建器，内联文件修改 diff
   ├── paste-image.js         ← 替换 MeFrontendRuntime：粘贴图片上传 + 提示词附路径
+  ├── debug-panel.js         ← 再包一层 MeFrontendRuntime：观察 /api/sync 驱动调试侧边栏
   └── app.js                 ← 共享核心，原封不动（加载时读取 MeFrontendRuntime）
 ```
 
-`tool-diff.js` 与 `paste-image.js` 都是“改变共享核心行为”的模块，但切入点不同：前者不碰 `app.js`，因为共享核心在每次渲染工具卡片时才去读 `globalThis.MeToolPresenters`，所以在它之前替换这个冻结对象就能生效（卡片构建器 `createMessageNode` / `updateToolCardNode` 要等 `app.js` 执行后才有，所以在 `DOMContentLoaded` 时再包一次）；后者替换的是 `globalThis.MeFrontendRuntime` 本身——`app.js` 在加载时就把它存进模块作用域，之后再换就无效了。装配脚本对两者各有顺序断言。
+`tool-diff.js`、`paste-image.js` 与 `debug-panel.js` 都是“改变共享核心行为”的模块，但切入点不同：`tool-diff.js` 不碰 `app.js`，因为共享核心在每次渲染工具卡片时才去读 `globalThis.MeToolPresenters`，所以在它之前替换这个冻结对象就能生效（卡片构建器 `createMessageNode` / `updateToolCardNode` 要等 `app.js` 执行后才有，所以在 `DOMContentLoaded` 时再包一次）；后两者替换的是 `globalThis.MeFrontendRuntime` 本身——`app.js` 在加载时就把它存进模块作用域，之后再换就无效了。两个运行时补丁用 `Object.create` 链式叠加，各自只覆写 `fetch` 并委派给上一层，因此互不覆盖。装配脚本对三者各有顺序断言。
 ```
 
 ### 数据出口只有一个
@@ -214,6 +216,35 @@ frontend-dist/index.html
 - 接入点是替换 `globalThis.MeFrontendRuntime`（原型子对象，只覆写 `fetch`），因为 `app.js` 在加载时就把这个全局存进模块作用域了。
 - 缩略图容器插在 `.prompt-input-stack` 之前，靠给 `.composer-shell` 加类切成两列网格；`frontend/` 一行未改。
 
+### 调试侧边栏（`debug-panel.js`）
+
+底部状态栏只给出模型、推理强度与一个 SSE 计数，看不出 agent 到底在干什么。右侧调试侧边栏补齐这部分：原始流式文本、输出速率、上下文明细、工具调用耗时、事件游标。右上角的悬浮按钮展开/收起，展开状态存 localStorage。
+
+**数据从哪来。** `app.js` 的 `state` 全在模块作用域且无导出，但每次 `/api/sync` 的响应体里就有全部原料：`projection_states[].range.projections[]`（assistant 流式 `content`、tool 调用、turn toolbar）与 `api_activity`。所以模块再包一层 `MeFrontendRuntime.fetch`，`clone()` 出响应体读 JSON，**不影响** 原响应。
+
+**实测与估算的界线（重要）**：
+
+| 指标 | 来源 | 性质 |
+| --- | --- | --- |
+| 本轮 SSE 事件数 | `api_activity.received_sse_events` | 实测，但每轮 API 调用归零，不是累计 |
+| 响应体积 | 客户端自己量响应体 UTF-8 字节 | 实测 |
+| 上下文分项 / 总计 | `context.values` / `context.total` | 实测 |
+| 工具耗时 | `result.finished - tool.started` | 实测；未完成时显示“进行中”而不编造 |
+| 字符/秒 | 同一 assistant key 的 `content.length` 差分 | 实测 |
+| tok/s | 字符数 ÷ 4 | **估算**：流式期间服务端不返回 `api_usage`（只在 `ApiState::Completed` / `Interrupted` 时写入），无法实测 |
+| 服务端用量 | `api_usage` | 实测，但只在 API 完成后出现 |
+
+**为什么不能直接测 token/s。** `ui_projection.rs` 里 `api_usage` 仅在 `ApiState::Completed` 与 `Interrupted` 两个分支被赋值，`ModelChanged` 与压缩完成时还会置 `None`。流式过程中它恒为 `null`，因此任何“实时 token/s”都只能是换算值——面板里明确标为“估算”，并在下方附一行说明。
+
+**几个实现细节**：
+
+- 速率按“同一个 assistant key”比较，新的一轮从零开始，不把上一轮的文本长度当成突发；文本变短（重写）时速率归零而不是负数。
+- 面板展开时 `html.me-tric-debug-open` 给 `.workspace` 加右内边距，而不是盖住对话；窗口窄于 1000px 时改为覆盖式。
+- “暂停”冻结采样（包括流式文本），便于看清楚某一帧；“清空”重置全部计数。
+- 状态栏新增的 `⇣ 12.3 KB · 42 SSE` 是本模块自己插入的 span，因为 `frontend/` 只读、不能改 `index.html`。
+- 与 `paste-image.js` 共存：两者都用 `Object.create` 链式包裹 `MeFrontendRuntime`，各覆写 `fetch` 并委派给上一层。
+
+
 
 ---
 
@@ -245,7 +276,7 @@ frontend-dist/index.html
 bun test tests/me_tric.test.js
 ```
 
-42 项测试（`42 pass, 0 fail`，445 expect），覆盖：
+53 项测试（`53 pass, 0 fail`，509 expect），覆盖：
 
 - 原生 UTF-8 JSON 响应 + 前端静态资源仍走浏览器 `fetch`
 - 就绪门控（`data-me-tric-startup="pending"` → `visibility:hidden` → `windowReady()` 一次性放行）
@@ -258,12 +289,13 @@ bun test tests/me_tric.test.js
 - 记住设备的增删与在线状态
 - macOS 关闭=隐藏、Reopen=恢复而非新开窗口
 - page-close JSON beacon 走原生传输
-- 前端装配（`frontend/` 来源、新模块注册、`/transport.js` 必须 absent、`tool-diff.js` 与 `paste-image.js` 的加载顺序）
+- 前端装配（`frontend/` 来源、新模块注册、`/transport.js` 必须 absent、`tool-diff.js` / `paste-image.js` / `debug-panel.js` 的加载顺序）
 - 版本一致性（`package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 全为 `0.1.0`）
 - 下载取消的注册时序与预取消
 - 设备列左栏、非激活保存不抢 target
-反复观察同一份写入文本不会把已验证的读取挤出缓存
+- 反复观察同一份写入文本不会把已验证的读取挤出缓存
 - **粘贴图片**：文件名是单一安全路径组件且不碰撞；上传地址相对化到 workspace（`Image.View` 的口径）；提示词只加一行路径且不重复；只有 `kind=file` 且 `image/*` 的剪贴板项被接管；替换运行时后其余成员完好且不重复包裹；空输入框发图片也能发出；上传中/失败的缩略图不进提示词；提交被拒时保留缩略图；其他请求直接透传
+- **调试侧边栏**：字节/token/时长格式化；以 `selected_agent` 而非数组顺序定位会话状态；流式文本取最新 assistant 部分；未完成工具不给耗时；上下文份额由 `total` 推导且无 total 时不除零；速率按同一 assistant key 计算且文本变短不产生负值；采样 sync 但不消费响应体；非 sync 请求不采样；暂停后不再采样；运行时链式包裹不丢失成员也不重复叠加
 
 > 测试顶部把 `readFileSync` 包了一层，统一 `\r\n` → `\n`。仓库在 Windows 上以 CRLF 检出，而多处断言写的是 `\n`。上游 `me-s` 在同一台机器上跑自己的测试套件会有 3 个失败，原因正是这个；本项目通过归一化解决。
 

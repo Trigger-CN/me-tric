@@ -1331,3 +1331,235 @@ test("the paste module is assembled before the core that captures the runtime", 
   // app.js reads MeFrontendRuntime at load time, so the patch must already be applied.
   expect(build).toContain('html.indexOf("/paste-image.js") < html.indexOf("/app.js")');
 });
+
+// `client/debug-panel.js` observes /api/sync through the same runtime replacement
+// the paste module uses. The interesting parts are the pure derivations: which
+// projection state is "selected", what counts as the streaming text, how the live
+// rate is computed, and that the response body is never consumed from under app.js.
+
+function loadDebugPanel() {
+  const calls = [];
+  const payloads = [];
+  const base = {
+    apiPath: (path, workspaceId) => `/api/workspaces/${workspaceId || "chat"}${String(path).slice(4)}`,
+    async fetch(input, options) {
+      calls.push({ input, options });
+      const payload = payloads.shift() || { ok: true };
+      const text = JSON.stringify(payload);
+      return {
+        ok: true,
+        status: 200,
+        async text() { return text; },
+        clone() { return { async text() { return text; }, async json() { return payload; } }; },
+      };
+    },
+  };
+  const sandbox = { MeFrontendRuntime: base };
+  new Function("globalThis", readFileSync(join(import.meta.dir, "../client/debug-panel.js"), "utf8"))(sandbox);
+  return { panel: sandbox.MeTricDebugPanel, runtime: sandbox.MeFrontendRuntime, base, calls, payloads };
+}
+
+/** One sync payload shaped like `webui.rs::sync_state_payload`. */
+function syncPayload({ content = "", tools = [], context = null, usage = null, state = "Streaming", selected = "main" } = {}) {
+  const projections = [];
+  if (content) projections.push({ kind: "assistant", key: "assistant:1", content, timestamp: 1000 });
+  for (const tool of tools) projections.push({ kind: "tool", key: `tool:${tool.id}`, tool });
+  return {
+    ok: true,
+    selected_agent: selected,
+    api_activity: { active: state === "Streaming", received_sse_events: 42 },
+    snapshot: { agents: [{ id: "main", edb_size_bytes: 2048 }] },
+    projection_states: [{
+      agent_id: selected,
+      revision: "rev-1",
+      count: projections.length,
+      source_event_count: 9,
+      last_event_id: 77,
+      changed_from: 0,
+      model: "test-model",
+      effort: "high",
+      api_state: state,
+      api_usage: usage,
+      turn_state: { state: "active" },
+      context: context || { total: 1000, values: { system: 400, compact: 0, memory: 0, user: 300, model: 250, tool: 50 } },
+      range: { start: 0, end: projections.length, count: projections.length, projections },
+    }],
+  };
+}
+
+test("the debug panel formats sizes, tokens and durations for humans", () => {
+  const { panel } = loadDebugPanel();
+  expect(panel.formatBytes(512)).toBe("512 B");
+  expect(panel.formatBytes(2048)).toBe("2.0 KB");
+  expect(panel.formatBytes(3 * 1024 * 1024)).toBe("3.00 MB");
+  expect(panel.formatTokens(null)).toBe("—");
+  expect(panel.formatTokens(999)).toBe("999");
+  expect(panel.formatTokens(1500)).toBe("1.5k");
+  expect(panel.formatTokens(2_500_000)).toBe("2.50M");
+  expect(panel.formatDuration(240)).toBe("240 ms");
+  expect(panel.formatDuration(2400)).toBe("2.4 s");
+  expect(panel.formatDuration(90_000)).toBe("1m 30s");
+});
+
+test("the panel reads the selected agent's own projection state", () => {
+  const { panel } = loadDebugPanel();
+  // `selected_agent` is what the server uses to decide who gets an inline range,
+  // so it — not array order — decides which state is authoritative.
+  const payload = {
+    selected_agent: "worker",
+    projection_states: [{ agent_id: "main", count: 1 }, { agent_id: "worker", count: 2 }],
+  };
+  expect(panel.selectedState(payload).agent_id).toBe("worker");
+  // A payload without a match still yields something renderable rather than throwing.
+  expect(panel.selectedState({ selected_agent: "gone", projection_states: [{ agent_id: "main" }] }).agent_id).toBe("main");
+  expect(panel.selectedState({})).toBe(null);
+  expect(panel.edbSize({ selected_agent: "main", snapshot: { agents: [{ id: "main", edb_size_bytes: 2048 }] } })).toBe(2048);
+  expect(panel.edbSize({ selected_agent: "main", snapshot: { agents: [] } })).toBe(null);
+});
+
+test("the streamed text is the newest assistant part, not the whole transcript", () => {
+  const { panel } = loadDebugPanel();
+  const state = {
+    range: {
+      projections: [
+        { kind: "user", key: "user:1", content: "看看这个" },
+        { kind: "assistant", key: "assistant:1", content: "旧的回答" },
+        { kind: "tool", key: "tool:1", tool: { name: "File.Read" } },
+        { kind: "assistant", key: "assistant:2", content: "正在流式输出" },
+      ],
+    },
+  };
+  expect(panel.latestAssistant(state).key).toBe("assistant:2");
+  expect(panel.latestAssistant(state).content).toBe("正在流式输出");
+  expect(panel.latestAssistant({ range: { projections: [] } })).toBe(null);
+  expect(panel.latestAssistant({})).toBe(null);
+});
+
+test("tool rows report a duration only once the tool finished", () => {
+  const { panel } = loadDebugPanel();
+  const state = {
+    range: {
+      projections: [
+        { kind: "tool", tool: { id: "a", name: "File.Read", started: 1000, result: { state: "succeeded", finished: 1250 } } },
+        { kind: "tool", tool: { id: "b", name: "File.Edit", started: 2000, queued: true } },
+        { kind: "worker-activity", tool: { id: "c", name: "Worker", started: 3000 } },
+      ],
+    },
+  };
+  const rows = panel.toolRows(state);
+  expect(rows.map((entry) => entry.name)).toEqual(["File.Read", "File.Edit", "Worker"]);
+  expect(rows[0].durationMs).toBe(250);
+  expect(rows[0].state).toBe("succeeded");
+  // An unfinished tool has no duration, so the UI shows "进行中" instead of a lie.
+  expect(rows[1].durationMs).toBe(null);
+  expect(rows[1].state).toBe("queued");
+  expect(rows[2].state).toBe("running");
+});
+
+test("the context list shares are computed from the reported total", () => {
+  const { panel } = loadDebugPanel();
+  const { total, rows } = panel.contextRows({
+    context: { total: 1000, values: { system: 400, compact: 0, memory: 0, user: 300, model: 250, tool: 50 } },
+  });
+  expect(total).toBe(1000);
+  expect(rows.map((entry) => entry.key)).toEqual(["system", "compact", "memory", "user", "model", "tool"]);
+  expect(rows[0].share).toBeCloseTo(40, 5);
+  expect(rows[5].share).toBeCloseTo(5, 5);
+  // No total means no percentages at all, rather than a division by zero.
+  const empty = panel.contextRows({});
+  expect(empty.total).toBe(null);
+  expect(empty.rows.every((entry) => entry.share === null)).toBe(true);
+});
+
+test("the live rate measures character growth within one assistant turn", () => {
+  const { panel } = loadDebugPanel();
+  // First sample: nothing to compare against yet.
+  const first = panel.nextRate({ key: "a", length: 100 }, null, 1000);
+  expect(first.rate).toBe(null);
+  // 200 characters over one second.
+  const second = panel.nextRate({ key: "a", length: 300 }, first, 2000);
+  expect(second.rate).toBe(200);
+  expect(second.length).toBe(300);
+
+  // A new assistant turn restarts from zero instead of counting the old length as
+  // a burst of output.
+  const third = panel.nextRate({ key: "b", length: 50 }, second, 3000);
+  expect(third.rate).toBe(null);
+  expect(third.length).toBe(50);
+  const fourth = panel.nextRate({ key: "b", length: 150 }, third, 4000);
+  expect(fourth.rate).toBe(100);
+
+  // Text that shrinks (a rewrite) never produces a negative rate.
+  expect(panel.nextRate({ key: "b", length: 10 }, fourth, 5000).rate).toBe(0);
+  // No assistant part at all means no rate.
+  expect(panel.nextRate(null, fourth, 6000).rate).toBe(null);
+});
+
+test("the panel observes sync responses without consuming them", () => {
+  const { panel, runtime, calls, payloads } = loadDebugPanel();
+  payloads.push(syncPayload({ content: "你好世界" }));
+  return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then((response) => {
+    // The core must still be able to read the body it was handed.
+    expect(response.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(panel.state.snapshot.api_activity.received_sse_events).toBe(42);
+    expect(panel.state.rate.length).toBe(4);
+    expect(panel.state.rate.text).toBe("你好世界");
+    expect(panel.state.lastBytes).toBeGreaterThan(0);
+    expect(panel.state.syncCount).toBe(1);
+  });
+});
+
+test("only sync polls are inspected, and a broken payload never breaks the core", () => {
+  const { panel, runtime, calls } = loadDebugPanel();
+  return runtime.fetch("/api/workspaces/chat/snapshot", { method: "POST" })
+    .then(() => {
+      expect(calls).toHaveLength(1);
+      // Nothing was observed, so the counters stayed at their initial values.
+      expect(panel.state.syncCount).toBe(0);
+      expect(panel.state.snapshot).toBe(null);
+      expect(panel.isSyncRequest("/api/workspaces/chat/sync")).toBe(true);
+      expect(panel.isSyncRequest("/api/workspaces/chat/sync?x=1")).toBe(true);
+      expect(panel.isSyncRequest("/api/workspaces/chat/snapshot")).toBe(false);
+    });
+});
+
+test("a paused panel freezes its samples", () => {
+  const { panel, runtime, payloads } = loadDebugPanel();
+  payloads.push(syncPayload({ content: "第一段" }));
+  return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
+    const before = panel.state.rate.text;
+    panel.state.paused = true;
+    payloads.push(syncPayload({ content: "第二段更长的内容" }));
+    return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
+      // Pausing stops sampling, so the last live text is what the box still shows.
+      expect(panel.state.rate.text).toBe(before);
+      expect(panel.state.syncCount).toBe(1);
+      panel.state.paused = false;
+    });
+  });
+});
+
+test("the panel chains onto the runtime without losing any member", () => {
+  const { panel, runtime, base } = loadDebugPanel();
+  expect(runtime).not.toBe(base);
+  expect(runtime.apiPath("/api/files/list", "chat")).toBe("/api/workspaces/chat/files/list");
+  expect(runtime.fetch).not.toBe(base.fetch);
+  // Re-installing must not stack a second wrapper.
+  const once = runtime.fetch;
+  panel.installRuntime();
+  expect(runtime.fetch).toBe(once);
+});
+
+test("the debug panel is assembled before the core that captures the runtime", () => {
+  const build = readFileSync(join(import.meta.dir, "../client/build-frontend.js"), "utf8");
+  expect(build).toContain('["debug-panel.js", "debug-panel.js"]');
+  expect(build).toContain('["debug-panel.css", "debug-panel.css"]');
+  expect(build).toContain('<script src="/debug-panel.js"></script>');
+  expect(build).toContain('<link rel="stylesheet" href="/debug-panel.css">');
+  expect(build).toContain('html.indexOf("/debug-panel.js") < html.indexOf("/app.js")');
+  // The panel is registered after the paste module so both runtime layers chain
+  // deterministically and neither one silently replaces the other.
+  expect(build.indexOf('["paste-image.js", "paste-image.js"]'))
+    .toBeLessThan(build.indexOf('["debug-panel.js", "debug-panel.js"]'));
+});
