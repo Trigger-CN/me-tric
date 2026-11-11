@@ -180,6 +180,53 @@
     return agent?.edb_size_bytes == null ? null : toNumber(agent.edb_size_bytes);
   }
 
+  /**
+   * The agent the user is actually looking at, read from the sidebar DOM.
+   *
+   * `app.js` keeps `state.selectedAgent` in module scope with no export, but it
+   * mirrors it onto the selected `.agent-row` (`updateAgentRow` toggles `.active`
+   * and sets `data-workspace-id`). This is the only authoritative answer to "which
+   * conversation is on screen", and the panel needs it to ignore the background
+   * polls that `app.js` also runs for other agents.
+   */
+  function selectedAgentId() {
+    const row = documentValue()?.querySelector?.(".agent-row.active");
+    return row?.dataset?.agentId || null;
+  }
+
+  /**
+   * True only for a response about the conversation currently on screen.
+   *
+   * `app.js` runs two kinds of sync: the foreground poll for the selected agent,
+   * and a background poll for other workspaces/agents (`backgroundSyncRequestBody`).
+   * Both hit `/api/sync`, so without this filter a background response would render
+   * as if it were the conversation on screen — which is what made the panel appear
+   * to change while nothing was happening.
+   */
+  function tracksSelected(payload, trackedAgentId, selected = selectedAgentId()) {
+    const reported = payload?.selected_agent ?? null;
+    if (!reported) return false;
+    // The server only attaches an inline `range` for the selected agent, so a
+    // response without one is a background poll even if the id matches.
+    const state = selectedState(payload);
+    if (!state || state.agent_id !== reported) return false;
+    if (state.range == null) return false;
+    // When the sidebar names a selection, it wins over whatever the poll reports.
+    if (selected) return reported === selected;
+    return trackedAgentId == null || trackedAgentId === reported;
+  }
+
+  /**
+   * Whether the agent is actually producing something right now. Idle polling keeps
+   * advancing cursors and response sizes; only these two signals mean real work.
+   */
+  function isActive(payload, grew) {
+    if (payload?.api_activity?.active) return true;
+    const turn = selectedState(payload)?.turn_state?.state;
+    if (turn === "active" || turn === "aborting") return true;
+    return toNumber(grew) > 0;
+  }
+
   // ---- state --------------------------------------------------------------
 
   const debugState = {
@@ -187,6 +234,8 @@
     paused: false,
     /** Latest parsed sync payload, kept only while the panel is open. */
     snapshot: null,
+    /** Which agent the panel is currently tracking; a change resets the samples. */
+    agentId: null,
     /** Rolling character-growth samples for the live rate. */
     rate: { rate: null, samples: [], key: null, length: 0 },
     /** Wall-clock of the last observed sync response. */
@@ -197,6 +246,8 @@
     syncCount: 0,
     /** Frozen streaming tail while paused. */
     frozenText: "",
+    /** Signature of the last rendered markup, so an unchanged frame writes nothing. */
+    renderSignature: null,
     root: null,
   };
 
@@ -284,14 +335,20 @@
       toggle = documentRef.createElement("button");
       toggle.id = TOGGLE_ID;
       toggle.type = "button";
-      toggle.className = "me-tric-debug-toggle";
+      toggle.className = "me-tric-debug-toggle theme-control";
       toggle.title = "展开调试面板";
       toggle.setAttribute("aria-label", "展开调试面板");
       toggle.setAttribute("aria-expanded", "false");
       toggle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
         + '<path d="M4 6h9M4 12h6M4 18h9"/><path d="M17 8v8M13.5 12.5 17 16l3.5-3.5"/></svg>';
       toggle.addEventListener("click", () => setOpen(!debugState.open));
-      documentRef.body.append(toggle);
+      // Join the sidebar's existing settings/theme row instead of floating over the
+      // transcript. `.sidebar-appearance` is the right-hand flex group there, and it
+      // survives the narrow layout where `.sidebar-settings` is hidden.
+      const row = documentRef.querySelector?.(".sidebar-appearance")
+        || documentRef.querySelector?.(".sidebar-footer");
+      if (row?.append) row.append(toggle);
+      else documentRef.body.append(toggle);
     }
     return toggle;
   }
@@ -305,6 +362,10 @@
       root.setAttribute("aria-hidden", String(!debugState.open));
     }
     if (toggle) {
+      // `app.js` re-renders the sidebar; re-attach if the button was detached.
+      const row = documentValue()?.querySelector?.(".sidebar-appearance")
+        || documentValue()?.querySelector?.(".sidebar-footer");
+      if (row?.contains && !row.contains(toggle)) row.append(toggle);
       toggle.classList.toggle("open", debugState.open);
       toggle.setAttribute("aria-expanded", String(debugState.open));
       toggle.title = debugState.open ? "收起调试面板" : "展开调试面板";
@@ -451,12 +512,24 @@
     const scroll = body.querySelector?.('[data-role="stream-text"]');
     const pinned = !scroll || scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 24;
 
-    body.querySelector('[data-role="overview"]').innerHTML = renderOverview(payload, state);
-    body.querySelector('[data-role="speed"]').innerHTML = renderSpeed(state);
-    body.querySelector('[data-role="stream"]').innerHTML = renderStream();
-    body.querySelector('[data-role="context"]').innerHTML = renderContext(state);
-    body.querySelector('[data-role="tools"]').innerHTML = renderTools(state);
-    body.querySelector('[data-role="cursors"]').innerHTML = renderCursors(payload, state);
+    const markup = {
+      overview: renderOverview(payload, state),
+      speed: renderSpeed(state),
+      stream: renderStream(),
+      context: renderContext(state),
+      tools: renderTools(state),
+      cursors: renderCursors(payload, state),
+    };
+    // Idle polls still arrive every second; writing identical markup each time would
+    // thrash the DOM and reset text selection for no visible change.
+    const signature = JSON.stringify([markup, debugState.paused, Boolean(payload?.api_activity?.active)]);
+    if (signature === debugState.renderSignature) return;
+    debugState.renderSignature = signature;
+
+    for (const [role, html] of Object.entries(markup)) {
+      const slot = body.querySelector(`[data-role="${role}"]`);
+      if (slot) slot.innerHTML = html;
+    }
 
     const next = body.querySelector?.('[data-role="stream-text"]');
     // Follow the tail only when the user was already at the bottom.
@@ -474,22 +547,47 @@
 
   function observeSync(payload, bytes) {
     if (debugState.paused) return;
-    debugState.snapshot = payload;
-    debugState.lastAt = Date.now();
-    debugState.lastBytes = bytes;
-    debugState.syncCount += 1;
+    // Background polls describe other agents; rendering them would make the panel
+    // change while the visible conversation is idle.
+    if (!tracksSelected(payload, debugState.agentId)) return;
+
+    const agentId = payload.selected_agent;
+    const switched = debugState.agentId !== agentId;
+    if (switched) {
+      // A different conversation starts with a clean sampling window.
+      debugState.agentId = agentId;
+      debugState.rate = { rate: null, samples: [], key: null, length: 0 };
+      debugState.syncCount = 0;
+      debugState.lastBytes = 0;
+      debugState.frozenText = "";
+      debugState.renderSignature = null;
+    }
 
     const state = selectedState(payload);
     const assistant = latestAssistant(state);
     const content = typeof assistant?.content === "string" ? assistant.content : "";
-    debugState.rate = nextRate(
+    const previous = debugState.rate;
+    const next = nextRate(
       assistant ? { key: assistant.key, length: content.length } : null,
-      debugState.rate,
-      debugState.lastAt,
+      previous,
+      Date.now(),
     );
+    const grew = toNumber(next.length) - toNumber(previous.key === next.key ? previous.length : 0);
+    const active = isActive(payload, grew);
+
+    debugState.snapshot = payload;
+    debugState.rate = next;
     debugState.rate.text = content.slice(-STREAM_TAIL_CHARS);
     // Keep the frozen copy current so pausing freezes at the last live text.
     debugState.frozenText = debugState.rate.text;
+
+    // Volatile bookkeeping only advances while the agent is actually working, so an
+    // idle conversation shows a stable frame instead of a ticking counter.
+    if (active) {
+      debugState.lastAt = Date.now();
+      debugState.lastBytes = bytes;
+      debugState.syncCount += 1;
+    }
 
     updateStatusBar();
     if (debugState.open) render();
@@ -588,6 +686,9 @@
     contextRows,
     nextRate,
     edbSize,
+    selectedAgentId,
+    tracksSelected,
+    isActive,
     isSyncRequest,
     observeSync,
     setOpen,

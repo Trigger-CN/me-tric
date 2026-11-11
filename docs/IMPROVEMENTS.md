@@ -199,7 +199,19 @@
 | `api_activity {active, received_sse_events}` | 本轮 SSE |
 | `snapshot.agents[].edb_size_bytes` | EDB 体积 |
 
-**面板分区**：概览 / 输出速度 / 流式数据文本框 / 上下文占用 / 工具调用 / 事件与游标。头部有暂停、清空、收起；右上角悬浮按钮展开收起，展开状态存 localStorage。
+**面板分区**：概览 / 输出速度 / 流式数据文本框 / 上下文占用 / 工具调用 / 事件与游标。头部有暂停、清空、收起；展开按钮在侧边栏底部的设置/主题那一行，展开状态存 localStorage。
+
+**只跟踪当前会话（修复）**：`app.js` 同时跑两类同步——前台轮询（选中会话，带 `range`）与后台轮询（`backgroundSyncRequestBody`，其他工作区/其他会话）。两者都打 `/api/sync`，所以初版把后台响应也当成当前会话渲染了，且 `selectedState` 会 fallback 到 `states[0]`。修正后：
+
+- 当前会话从侧边栏 DOM 读取（`.agent-row.active` 的 `data-agent-id`），因为 `state.selectedAgent` 不可导出；
+- 只接受 `selected_agent` 与侧边栏一致、且 `projection_states[].range` 存在的响应。服务端只为选中会话附 `range`（`webui.rs:0441-0445` 只对 `selected_agent` 传 `projection_window`），所以它的缺失就是后台轮询的铁证；
+- 会话切换时重置采样窗口、计数与渲染签名。
+
+**空闲时不跳动（修复）**：即使无对话在工作，轮询仍每秒到达并推进游标，初版把每次必然变化的字段直接渲染了。修正后：
+
+- 只有 `api_activity.active`、turn_state 为 active/aborting、或 assistant 文本增长才算“活动”；
+- `响应体积` / `采样次数` / `响应时间` 只在活动时推进，空闲时停在最后一次活动值；
+- `render()` 用 JSON 签名去重，签名不变直接 return，不写 DOM。
 
 **实测与估算的界线（这是本项最重要的诚实约束）**：
 
@@ -218,6 +230,7 @@
 - 未完成的工具不给耗时，显示“进行中”，不编造数字。
 - 面板展开时给 `.workspace` 加右内边距而不是盖住对话；窗口窄于 1000px 时改为覆盖式。
 - 状态栏的 `⇣ 12.3 KB · 42 SSE` 是本模块自己插入的 span，因为 `frontend/` 只读。
+- 按钮带 `theme-control` 类并 append 进 `.sidebar-appearance`：窄屏（<620px）下 `.sidebar-settings` 被 `display:none` 而该容器保留，所以按钮始终可见；`setOpen` 会检测侧边栏被重建后重新挂载。
 - 与 `paste-image.js` 共存：两者都用 `Object.create` 链式包裹，各覆写 `fetch` 并委派给上一层。
 
 **已接受的残留风险**：
@@ -225,6 +238,7 @@
 - 采样依赖轮询频率（活跃时 250 ms、空闲时 1000 ms），所以“字符/秒”的采样粒度也受此限制，不是逐 token 精确。
 - 侧边栏的排版、滚动与展开动画未经真实窗口实测，只能在 bun 测试里验证纯函数与响应解析。
 - 面板数据不持久化，刷新后从空开始（包括采样次数与速率窗口）。
+- 当前会话依赖侧边栏 `.agent-row.active` 这个 DOM 结构；如果上游改了行标记，面板会退化为“无选中会话”（不采样），而不是默默展示错会话。
 
 
 

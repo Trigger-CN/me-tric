@@ -1337,7 +1337,7 @@ test("the paste module is assembled before the core that captures the runtime", 
 // projection state is "selected", what counts as the streaming text, how the live
 // rate is computed, and that the response body is never consumed from under app.js.
 
-function loadDebugPanel() {
+function loadDebugPanel({ selectedAgent = null } = {}) {
   const calls = [];
   const payloads = [];
   const base = {
@@ -1354,9 +1354,26 @@ function loadDebugPanel() {
       };
     },
   };
-  const sandbox = { MeFrontendRuntime: base };
+  // The sidebar row is how the module learns which conversation is on screen;
+  // `app.js` mirrors `state.selectedAgent` onto it. `select` mutates it so a test
+  // can simulate the user switching conversations.
+  const selection = { agentId: selectedAgent };
+  const sandbox = {
+    MeFrontendRuntime: base,
+    document: {
+      querySelector(selector) {
+        if (selector !== ".agent-row.active" || !selection.agentId) return null;
+        return { dataset: { agentId: selection.agentId } };
+      },
+    },
+  };
   new Function("globalThis", readFileSync(join(import.meta.dir, "../client/debug-panel.js"), "utf8"))(sandbox);
-  return { panel: sandbox.MeTricDebugPanel, runtime: sandbox.MeFrontendRuntime, base, calls, payloads };
+  return {
+    panel: sandbox.MeTricDebugPanel,
+    runtime: sandbox.MeFrontendRuntime,
+    base, calls, payloads,
+    select: (agentId) => { selection.agentId = agentId; },
+  };
 }
 
 /** One sync payload shaped like `webui.rs::sync_state_payload`. */
@@ -1562,4 +1579,128 @@ test("the debug panel is assembled before the core that captures the runtime", (
   // deterministically and neither one silently replaces the other.
   expect(build.indexOf('["paste-image.js", "paste-image.js"]'))
     .toBeLessThan(build.indexOf('["debug-panel.js", "debug-panel.js"]'));
+});
+
+// The panel must not appear to be doing something when nothing is happening: a
+// background poll describes another agent, and an idle poll only advances cursors.
+// These tests pin both behaviours, plus the launcher's new home in the sidebar row.
+
+test("a response about another agent never becomes the panel's state", () => {
+  // The sidebar says "main" is on screen, so a poll naming "worker" is background.
+  const { panel, runtime, payloads } = loadDebugPanel({ selectedAgent: "main" });
+  payloads.push(syncPayload({ content: "别人的回答", selected: "worker" }));
+  return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
+    expect(panel.state.snapshot).toBe(null);
+    expect(panel.state.agentId).toBe(null);
+    expect(panel.state.syncCount).toBe(0);
+    expect(panel.state.rate.text).toBeUndefined();
+  });
+});
+
+test("the panel follows the conversation the sidebar marks as active", () => {
+  const { panel, runtime, payloads } = loadDebugPanel({ selectedAgent: "main" });
+  expect(panel.selectedAgentId()).toBe("main");
+  payloads.push(syncPayload({ content: "当前会话", selected: "main" }));
+  return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
+    expect(panel.state.agentId).toBe("main");
+    expect(panel.state.rate.text).toBe("当前会话");
+  });
+});
+
+test("a response without an inline range is a background poll, not the selection", () => {
+  const { panel } = loadDebugPanel();
+  // The server only attaches `range` to the selected agent's state, so its absence
+  // is proof this was a background sync even when the id happens to match.
+  const withoutRange = syncPayload({ content: "x" });
+  delete withoutRange.projection_states[0].range;
+  expect(panel.tracksSelected(withoutRange, null)).toBe(false);
+  expect(panel.tracksSelected(syncPayload({ content: "x" }), null)).toBe(true);
+  // A payload whose selected id does not match its own state is also rejected.
+  const mismatched = syncPayload({ content: "x" });
+  mismatched.selected_agent = "other";
+  expect(panel.tracksSelected(mismatched, null)).toBe(false);
+  // Once tracking one agent, a different one is refused.
+  expect(panel.tracksSelected(syncPayload({ content: "x", selected: "worker" }), "main")).toBe(false);
+  expect(panel.tracksSelected(syncPayload({ content: "x", selected: "main" }), "main")).toBe(true);
+  // A selection read from the sidebar overrides the tracked id entirely.
+  expect(panel.tracksSelected(syncPayload({ content: "x", selected: "main" }), null, "worker")).toBe(false);
+});
+
+test("only real work counts as activity", () => {
+  const { panel } = loadDebugPanel();
+  expect(panel.isActive(syncPayload({ state: "Streaming" }), 0)).toBe(true);
+  expect(panel.isActive({ api_activity: { active: false }, projection_states: [{ agent_id: "main" }] }, 0)).toBe(false);
+  // Text arriving without an active flag still counts.
+  expect(panel.isActive({ api_activity: { active: false }, projection_states: [] }, 12)).toBe(true);
+  // An active turn counts even before any text arrives.
+  const activeTurn = syncPayload({ state: "Completed" });
+  activeTurn.projection_states[0].turn_state = { state: "active" };
+  expect(panel.isActive(activeTurn, 0)).toBe(true);
+});
+
+test("an idle poll advances nothing, so the panel holds still", () => {
+  const { panel, runtime, payloads } = loadDebugPanel();
+  const idle = () => {
+    const payload = syncPayload({ content: "已经写完的回答", state: "Completed" });
+    payload.api_activity = { active: false, received_sse_events: 0 };
+    payload.projection_states[0].turn_state = { state: "completed" };
+    return payload;
+  };
+  payloads.push(idle());
+  return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
+    const afterFirst = {
+      bytes: panel.state.lastBytes,
+      count: panel.state.syncCount,
+      at: panel.state.lastAt,
+    };
+    // Repeated identical idle polls must not move any of the volatile counters.
+    payloads.push(idle(), idle(), idle());
+    return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" })
+      .then(() => runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }))
+      .then(() => runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }))
+      .then(() => {
+        expect(panel.state.lastBytes).toBe(afterFirst.bytes);
+        expect(panel.state.syncCount).toBe(afterFirst.count);
+        expect(panel.state.lastAt).toBe(afterFirst.at);
+        // The snapshot itself is still refreshed, so the values shown stay current.
+        expect(panel.state.snapshot).not.toBe(null);
+      });
+  });
+});
+
+test("switching conversation resets the sampling window", () => {
+  const { panel, runtime, payloads, select } = loadDebugPanel({ selectedAgent: "main" });
+  payloads.push(syncPayload({ content: "第一个会话的回答", selected: "main" }));
+  return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
+    expect(panel.state.agentId).toBe("main");
+    expect(panel.state.rate.length).toBeGreaterThan(0);
+    // The user now selects a different conversation, and its poll arrives.
+    select("other");
+    payloads.push(syncPayload({ content: "短", selected: "other" }));
+    return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
+      expect(panel.state.agentId).toBe("other");
+      // A new conversation starts from zero rather than inheriting the old length.
+      expect(panel.state.rate.length).toBe(1);
+      expect(panel.state.syncCount).toBe(1);
+    });
+  });
+});
+
+test("the launcher joins the sidebar's settings/theme row", () => {
+  const source = readFileSync(join(import.meta.dir, "../client/debug-panel.js"), "utf8");
+  const css = readFileSync(join(import.meta.dir, "../client/debug-panel.css"), "utf8");
+  // Mounted into the existing footer row instead of floating over the transcript.
+  expect(source).toContain('querySelector?.(".sidebar-appearance")');
+  expect(source).toContain('"me-tric-debug-toggle theme-control"');
+  // The floating placement must be gone, or it would still cover the composer.
+  expect(css).not.toContain("position: fixed;\n  z-index: 41;");
+  expect(css).not.toContain("bottom: 52px");
+});
+
+test("an unchanged frame writes no DOM", () => {
+  const source = readFileSync(join(import.meta.dir, "../client/debug-panel.js"), "utf8");
+  // Idle polls arrive every second; without this guard each one rewrote six
+  // sections of innerHTML and reset any selection inside the stream box.
+  expect(source).toContain("debugState.renderSignature");
+  expect(source).toContain("if (signature === debugState.renderSignature) return;");
 });

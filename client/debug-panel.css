@@ -295,33 +295,18 @@ html.me-tric-debug-open .workspace {
   white-space: nowrap;
 }
 
-/* The launcher sits above the status bar so it never covers the composer. */
+/*
+ * The launcher lives in the sidebar's settings/theme row, so it inherits the same
+ * geometry as `.theme-control`. Only the on/off colour is added here; the core's
+ * own hover/focus rules already apply.
+ */
 #me-tric-debug-toggle {
-  position: fixed;
-  z-index: 41;
-  right: 12px;
-  bottom: 52px;
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--border-bright);
-  border-radius: 9px;
-  background: var(--panel);
   color: var(--muted);
-  box-shadow: var(--shadow);
-  cursor: pointer;
-  transition: color .12s ease, border-color .12s ease;
-}
-
-#me-tric-debug-toggle:hover {
-  border-color: var(--accent);
-  color: var(--text);
 }
 
 #me-tric-debug-toggle.open {
-  border-color: var(--accent);
+  border-color: var(--accent-ring);
+  background: var(--accent-faint);
   color: var(--accent);
 }
 

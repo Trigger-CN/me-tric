@@ -218,16 +218,28 @@ frontend-dist/index.html
 
 ### 调试侧边栏（`debug-panel.js`）
 
-底部状态栏只给出模型、推理强度与一个 SSE 计数，看不出 agent 到底在干什么。右侧调试侧边栏补齐这部分：原始流式文本、输出速率、上下文明细、工具调用耗时、事件游标。右上角的悬浮按钮展开/收起，展开状态存 localStorage。
+底部状态栏只给出模型、推理强度与一个 SSE 计数，看不出 agent 到底在干什么。右侧调试侧边栏补齐这部分：原始流式文本、输出速率、上下文明细、工具调用耗时、事件游标。展开按钮在**侧边栏底部的设置/主题那一行**（与主题按钮同排），展开状态存 localStorage。
 
 **数据从哪来。** `app.js` 的 `state` 全在模块作用域且无导出，但每次 `/api/sync` 的响应体里就有全部原料：`projection_states[].range.projections[]`（assistant 流式 `content`、tool 调用、turn toolbar）与 `api_activity`。所以模块再包一层 `MeFrontendRuntime.fetch`，`clone()` 出响应体读 JSON，**不影响** 原响应。
+
+**只跟踪当前会话。** `app.js` 会跑两类同步：前台轮询（选中会话，带 `range`）与后台轮询（其他工作区/其他会话，`backgroundSyncRequestBody`）。两者都打 `/api/sync`，所以面板必须过滤：
+
+- 当前选中会话从侧边栏 DOM 读取（`.agent-row.active` 的 `data-agent-id`），因为 `state.selectedAgent` 不可导出；
+- 只接受 `selected_agent` 与侧边栏一致、且 `projection_states[].range` 存在的响应——服务端只为选中会话附 `range`，所以它的缺失就是后台轮询的铁证；
+- 会话切换时重置采样窗口、计数与渲染签名。
+
+**空闲时不跳动。** 即使没有对话在工作，轮询仍每秒到达并推进游标，所以：
+
+- 只有 `api_activity.active`、turn_state 为 active/aborting、或 assistant 文本增长时才计为“活动”；
+- `响应体积` / `采样次数` / `响应时间` 只在活动时推进，空闲时停在最后一次活动值；
+- `render()` 用 JSON 签名去重，签名不变直接 return，不写 DOM（否则每次轮询都会重写六个分区并清掉文本框里的选区）。
 
 **实测与估算的界线（重要）**：
 
 | 指标 | 来源 | 性质 |
 | --- | --- | --- |
 | 本轮 SSE 事件数 | `api_activity.received_sse_events` | 实测，但每轮 API 调用归零，不是累计 |
-| 响应体积 | 客户端自己量响应体 UTF-8 字节 | 实测 |
+| 响应体积 | 客户端自己量响应体 UTF-8 字节 | 实测，且仅在活动时推进 |
 | 上下文分项 / 总计 | `context.values` / `context.total` | 实测 |
 | 工具耗时 | `result.finished - tool.started` | 实测；未完成时显示“进行中”而不编造 |
 | 字符/秒 | 同一 assistant key 的 `content.length` 差分 | 实测 |
@@ -242,6 +254,7 @@ frontend-dist/index.html
 - 面板展开时 `html.me-tric-debug-open` 给 `.workspace` 加右内边距，而不是盖住对话；窗口窄于 1000px 时改为覆盖式。
 - “暂停”冻结采样（包括流式文本），便于看清楚某一帧；“清空”重置全部计数。
 - 状态栏新增的 `⇣ 12.3 KB · 42 SSE` 是本模块自己插入的 span，因为 `frontend/` 只读、不能改 `index.html`。
+- 按钮带 `theme-control` 类并 append 进 `.sidebar-appearance`：窄屏下 `.sidebar-settings` 被隐藏而该容器保留，所以按钮始终可见；`setOpen` 会检测侧边栏被重建后重新挂载。
 - 与 `paste-image.js` 共存：两者都用 `Object.create` 链式包裹 `MeFrontendRuntime`，各覆写 `fetch` 并委派给上一层。
 
 
@@ -276,7 +289,7 @@ frontend-dist/index.html
 bun test tests/me_tric.test.js
 ```
 
-53 项测试（`53 pass, 0 fail`，509 expect），覆盖：
+61 项测试（`61 pass, 0 fail`，541 expect），覆盖：
 
 - 原生 UTF-8 JSON 响应 + 前端静态资源仍走浏览器 `fetch`
 - 就绪门控（`data-me-tric-startup="pending"` → `visibility:hidden` → `windowReady()` 一次性放行）
@@ -295,7 +308,7 @@ bun test tests/me_tric.test.js
 - 设备列左栏、非激活保存不抢 target
 - 反复观察同一份写入文本不会把已验证的读取挤出缓存
 - **粘贴图片**：文件名是单一安全路径组件且不碰撞；上传地址相对化到 workspace（`Image.View` 的口径）；提示词只加一行路径且不重复；只有 `kind=file` 且 `image/*` 的剪贴板项被接管；替换运行时后其余成员完好且不重复包裹；空输入框发图片也能发出；上传中/失败的缩略图不进提示词；提交被拒时保留缩略图；其他请求直接透传
-- **调试侧边栏**：字节/token/时长格式化；以 `selected_agent` 而非数组顺序定位会话状态；流式文本取最新 assistant 部分；未完成工具不给耗时；上下文份额由 `total` 推导且无 total 时不除零；速率按同一 assistant key 计算且文本变短不产生负值；采样 sync 但不消费响应体；非 sync 请求不采样；暂停后不再采样；运行时链式包裹不丢失成员也不重复叠加
+- **调试侧边栏**：字节/token/时长格式化；以 `selected_agent` 而非数组顺序定位会话状态；流式文本取最新 assistant 部分；未完成工具不给耗时；上下文份额由 `total` 推导且无 total 时不除零；速率按同一 assistant key 计算且文本变短不产生负值；采样 sync 但不消费响应体；非 sync 请求不采样；暂停后不再采样；运行时链式包裹不丢失成员也不重复叠加；**只跟踪侧边栏标记的当前会话（其他 agent 的响应被丢弃）**；**无 `range` 即后台轮询**；**空闲轮询不推进体积/次数/时间**；**会话切换重置采样窗口**；**按钮在设置/主题行且不再固定定位**；**签名不变不写 DOM**
 
 > 测试顶部把 `readFileSync` 包了一层，统一 `\r\n` → `\n`。仓库在 Windows 上以 CRLF 检出，而多处断言写的是 `\n`。上游 `me-s` 在同一台机器上跑自己的测试套件会有 3 个失败，原因正是这个；本项目通过归一化解决。
 
