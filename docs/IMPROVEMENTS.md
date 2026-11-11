@@ -203,7 +203,7 @@
 
 **只跟踪当前会话（修复）**：`app.js` 同时跑两类同步——前台轮询（选中会话，带 `range`）与后台轮询（`backgroundSyncRequestBody`，其他工作区/其他会话）。两者都打 `/api/sync`，所以初版把后台响应也当成当前会话渲染了，且 `selectedState` 会 fallback 到 `states[0]`。修正后：
 
-- 当前会话从侧边栏 DOM 读取（`.agent-row.active` 的 `data-agent-id`），因为 `state.selectedAgent` 不可导出；
+- 当前会话从侧边栏 DOM 读取（`.agent-row.active` 的 `data-agent-row` → `dataset.agentRow`），因为 `state.selectedAgent` 不可导出；
 - 只接受 `selected_agent` 与侧边栏一致、且 `projection_states[].range` 存在的响应。服务端只为选中会话附 `range`（`webui.rs:0441-0445` 只对 `selected_agent` 传 `projection_window`），所以它的缺失就是后台轮询的铁证；
 - 会话切换时重置采样窗口、计数与渲染签名。
 
@@ -223,9 +223,23 @@
 
 **为什么不能实测 token/s**：`ui_projection.rs` 里 `api_usage` 仅在 `ApiState::Completed` 与 `Interrupted` 两个分支被赋值（:0868、:0888），`ModelChanged` 与压缩完成时还会置 `None`。流式过程中它恒为 `null`。同理 `received_sse_events` 在每次 API 调用开始时清零（orchestrator.rs `ApiActivity::begin`），所以它是“本轮”而不是“累计”。面板对两者都按真实语义措辞，不把估算包装成实测。
 
+**速率恒为零（修复）**：用户反馈“右边栏的输出速度相关数据一直是零”。实测复现后确认是两个缺陷叠加：
+
+1. **采样窗口绑在了 assistant 部件身份上。** 服务端的 `key` 是 `assistant:{prompt_id}:{response.id}`，只在部件创建时生成（`ui_projection.rs:0836`），之后流式分块只更新 `content` / `revision`，所以它在单个部件内确实稳定。但**一轮会发多次 API 调用**（每个工具轮次一次），每次都 `append` 一个**新的** assistant 部件、带**新的** `key`。按部件身份计数时，每个工具边界都会把窗口重置成单元素，而单元素永远算不出速率。编码回合里工具轮次占大头，于是速率基本一直是 `null`。
+2. **无文本的轮询会把窗口清空。** `nextRate(null, …)` 直接返回 `samples: []`；只要窗口尾部暂时没有 assistant 部件（只剩工具，或本轮还没出字），之前攒的样本就全丢了。
+
+修正后速率以**整轮**为窗口：从最新的 `user` 部件之后累加所有 assistant 文本长度，工具边界不会重置它；无 assistant 文本的轮询**保留**已有窗口（`grown: 0`）而不是清空；只有用户发新消息（新轮）或文本变短（窗口滚动/部件被替换，旧样本描述的是另一段后缀）才重新起算。
+
+同时修掉两个让读数看起来“死”的问题：
+
+- 亚 1 字符/秒的速率被 `Math.round` 归零，显示成“0 字符/秒”。现在小于 10 的值保留一位小数（`formatRate`）。
+- 速度区块新增“采样点”行，且空闲（非活动）时不再显示“采样中…”，改为“—”，避免整块读数看起来像还没工作。
+
+顺带修掉一个潜伏缺陷：`selectedAgentId()` 读的是 `row.dataset.agentId`，但 `app.js::createAgentRow` 发出的是 `data-agent-row`（即 `dataset.agentRow`），所以生产环境恒返回 `null`，“侧边栏优先”这条规则实际是死的（行为上只是退回 `trackedAgentId` 分支，所以一直没暴露）。测试里的 mock 也用了错的字段名，因此没抓住它。
+
 **几个实现细节**：
 
-- 速率按“同一个 assistant key”比较：新一轮从零开始，不把上一轮长度当成突发；文本变短（重写）时归零而不是负数。
+- 速率按“同一轮”比较：新一轮从零开始，不把上一轮长度当成突发；文本变短时重新起算而不是给出负数。
 - 只采样 `/api/sync`：注意 `app.js` 先调 `apiPath()` 把它改写成 `/api/workspaces/<id>/sync`，正则必须同时匹配两种形式——否则在生产环境下会静默永不采样（实现时正是这个 bug，测试才抳住）。
 - 未完成的工具不给耗时，显示“进行中”，不编造数字。
 - 面板展开时给 `.workspace` 加右内边距而不是盖住对话；窗口窄于 1000px 时改为覆盖式。

@@ -145,31 +145,78 @@
   }
 
   /**
-   * Characters per second over the sampling window. Growth is compared against the
-   * previous sample of the *same* assistant key, so a new turn starts from zero
-   * instead of counting the previous answer's length as a burst.
+   * The turn currently on screen: every assistant part after the newest user
+   * prompt, and how much text those parts hold.
+   *
+   * Why the turn and not the newest assistant part: one turn issues several API
+   * calls (one per tool round), and each call appends a *new* assistant part with
+   * its own `key` (`assistant:{prompt_id}:{response.id}`). Keying the rate on the
+   * part identity therefore reset the sampling window at every tool boundary —
+   * which is most of a coding turn — so the window rarely held two samples and the
+   * rate stayed null. The turn's assistant text is monotone across those
+   * boundaries, so the measurement survives them.
+   */
+  function currentTurn(state) {
+    const parts = partsOf(state);
+    let start = -1;
+    for (let index = parts.length - 1; index >= 0; index -= 1) {
+      if (parts[index]?.kind === "user") { start = index; break; }
+    }
+    const turn = start >= 0 ? String(parts[start].key || `user:${start}`) : "";
+    const slice = start >= 0 ? parts.slice(start + 1) : parts;
+    let text = "";
+    let hasText = false;
+    for (const part of slice) {
+      if (part?.kind !== "assistant" || typeof part.content !== "string") continue;
+      text += part.content;
+      hasText = true;
+    }
+    return { turn, chars: text.length, hasText, text };
+  }
+
+  /**
+   * Characters per second over the sampling window.
+   *
+   * The window belongs to the *turn*, not to one assistant part, and a poll that
+   * carries no assistant text at all (a tool-only suffix, or a turn that has not
+   * produced text yet) keeps the previous window instead of wiping it. Wiping was
+   * the other half of the bug: one text-free poll left a single sample behind, and
+   * a single sample can never yield a rate.
    */
   function nextRate(sample, previous, now) {
-    const key = sample?.key || null;
-    const length = toNumber(sample?.length);
-    if (!key) return { rate: null, samples: [], key: null, length: 0 };
-    const sameTurn = previous?.key === key;
-    const base = sameTurn ? toNumber(previous.length) : 0;
-    const grown = Math.max(0, length - base);
-    const samples = sameTurn ? [...(previous.samples || []), { at: now, length }] : [{ at: now, length }];
+    const base = previous || {};
+    const turn = sample?.turn ?? base.turn ?? "";
+    if (!sample?.hasText || sample?.chars == null) {
+      return {
+        rate: base.rate ?? null,
+        samples: base.samples || [],
+        turn,
+        chars: toNumber(base.chars),
+        grown: 0,
+      };
+    }
+    const chars = Math.max(0, toNumber(sample.chars));
+    const sameTurn = base.turn === turn;
+    // A shrinking count means the window scrolled or a part was replaced; the old
+    // samples describe a different suffix, so the difference would be meaningless.
+    const continuous = sameTurn && chars >= toNumber(base.chars);
+    const samples = [...(continuous ? base.samples || [] : []), { at: now, chars }];
     const recent = samples.filter((entry) => now - entry.at <= RATE_WINDOW_MS);
     // Keep one sample just outside the window so the span is never zero.
     const windowed = recent.length >= 2 ? recent : samples.slice(-2);
+    const grown = Math.max(0, chars - toNumber(base.chars));
     if (windowed.length < 2) {
-      return { rate: null, samples: samples.slice(-24), key, length, grown };
+      return { rate: null, samples: samples.slice(-24), turn, chars, grown };
     }
     const span = windowed[windowed.length - 1].at - windowed[0].at;
-    const delta = windowed[windowed.length - 1].length - windowed[0].length;
+    const delta = windowed[windowed.length - 1].chars - windowed[0].chars;
     return {
-      rate: span > 0 ? Math.max(0, delta) / (span / 1000) : null,
+      // Two samples sharing one timestamp cannot be divided; the previous rate is
+      // still a better answer than a null that erases the block.
+      rate: span > 0 ? Math.max(0, delta) / (span / 1000) : base.rate ?? null,
       samples: samples.slice(-24),
-      key,
-      length,
+      turn,
+      chars,
       grown,
     };
   }
@@ -191,7 +238,9 @@
    */
   function selectedAgentId() {
     const row = documentValue()?.querySelector?.(".agent-row.active");
-    return row?.dataset?.agentId || null;
+    // `createAgentRow` emits `data-agent-row`, so the DOM exposes `dataset.agentRow`;
+    // reading `agentId` returned null for every row.
+    return row?.dataset?.agentRow || row?.dataset?.agentId || null;
   }
 
   /**
@@ -229,6 +278,11 @@
 
   // ---- state --------------------------------------------------------------
 
+  /** A clean sampling window. `text` and `active` are filled in as polls arrive. */
+  function emptyRate() {
+    return { rate: null, samples: [], turn: null, chars: 0, active: false };
+  }
+
   const debugState = {
     open: false,
     paused: false,
@@ -237,7 +291,7 @@
     /** Which agent the panel is currently tracking; a change resets the samples. */
     agentId: null,
     /** Rolling character-growth samples for the live rate. */
-    rate: { rate: null, samples: [], key: null, length: 0 },
+    rate: emptyRate(),
     /** Wall-clock of the last observed sync response. */
     lastAt: 0,
     /** Bytes of the last sync response body. */
@@ -386,12 +440,12 @@
       if (!debugState.paused) {
         // Resuming restarts the sampling window; the frozen text is dropped.
         debugState.frozenText = "";
-        debugState.rate = { rate: null, samples: [], key: null, length: 0 };
+        debugState.rate = emptyRate();
       }
       render();
     } else if (action === "clear") {
       debugState.snapshot = null;
-      debugState.rate = { rate: null, samples: [], key: null, length: 0 };
+      debugState.rate = emptyRate();
       debugState.frozenText = "";
       debugState.lastBytes = 0;
       debugState.syncCount = 0;
@@ -418,14 +472,23 @@
     return section("概览", rows.join(""));
   }
 
+  /** Rates below 10 keep one decimal; `Math.round` alone showed a real 0.4 as 0. */
+  function formatRate(value) {
+    if (value == null) return null;
+    return value >= 10 ? Math.round(value).toLocaleString() : value.toFixed(1);
+  }
+
   function renderSpeed(state) {
-    const rate = debugState.rate.rate;
-    const chars = toNumber(debugState.rate.length);
+    const { rate, chars, samples, active } = debugState.rate;
+    const speed = formatRate(rate);
     const rows = [
-      row("当前文本", `${chars.toLocaleString()} 字符`),
-      row("输出速度", rate == null ? "采样中…" : `${Math.round(rate)} 字符/秒`),
-      row("折合速率", rate == null ? "—" : `${Math.round(rate / CHARS_PER_TOKEN)} tok/s（估算）`),
-      row("每分钟", rate == null ? "—" : `${Math.round(rate * 60).toLocaleString()} 字符/分`),
+      row("当前文本", `${toNumber(chars).toLocaleString()} 字符`),
+      // `采样中…` only while work is in flight; an idle turn must not claim to be
+      // still measuring, and a measured rate must never be rounded down to 0.
+      row("输出速度", speed == null ? (active ? "采样中…" : "—") : `${speed} 字符/秒`),
+      row("折合速率", speed == null ? "—" : `${formatRate(rate / CHARS_PER_TOKEN)} tok/s（估算）`),
+      row("每分钟", speed == null ? "—" : `${Math.round(rate * 60).toLocaleString()} 字符/分`),
+      row("采样点", `${(samples || []).length} 个`),
     ];
     const usage = state?.api_usage;
     if (usage) {
@@ -556,7 +619,7 @@
     if (switched) {
       // A different conversation starts with a clean sampling window.
       debugState.agentId = agentId;
-      debugState.rate = { rate: null, samples: [], key: null, length: 0 };
+      debugState.rate = emptyRate();
       debugState.syncCount = 0;
       debugState.lastBytes = 0;
       debugState.frozenText = "";
@@ -564,20 +627,16 @@
     }
 
     const state = selectedState(payload);
-    const assistant = latestAssistant(state);
-    const content = typeof assistant?.content === "string" ? assistant.content : "";
+    const turn = currentTurn(state);
     const previous = debugState.rate;
-    const next = nextRate(
-      assistant ? { key: assistant.key, length: content.length } : null,
-      previous,
-      Date.now(),
-    );
-    const grew = toNumber(next.length) - toNumber(previous.key === next.key ? previous.length : 0);
+    const next = nextRate(turn, previous, Date.now());
+    const grew = toNumber(next.chars) - toNumber(previous.turn === next.turn ? previous.chars : 0);
     const active = isActive(payload, grew);
 
     debugState.snapshot = payload;
     debugState.rate = next;
-    debugState.rate.text = content.slice(-STREAM_TAIL_CHARS);
+    debugState.rate.active = active;
+    debugState.rate.text = turn.text.slice(-STREAM_TAIL_CHARS);
     // Keep the frozen copy current so pausing freezes at the last live text.
     debugState.frozenText = debugState.rate.text;
 
@@ -680,8 +739,11 @@
     formatBytes,
     formatTokens,
     formatDuration,
+    formatRate,
     selectedState,
     latestAssistant,
+    currentTurn,
+    renderSpeed,
     toolRows,
     contextRows,
     nextRate,

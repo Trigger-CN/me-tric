@@ -1363,7 +1363,10 @@ function loadDebugPanel({ selectedAgent = null } = {}) {
     document: {
       querySelector(selector) {
         if (selector !== ".agent-row.active" || !selection.agentId) return null;
-        return { dataset: { agentId: selection.agentId } };
+        // `app.js::createAgentRow` emits `data-agent-row`, so the DOM exposes
+        // `dataset.agentRow`. The mock must mirror the real attribute name or it
+        // hides a broken lookup instead of catching it.
+        return { dataset: { agentRow: selection.agentId } };
       },
     },
   };
@@ -1488,29 +1491,100 @@ test("the context list shares are computed from the reported total", () => {
   expect(empty.rows.every((entry) => entry.share === null)).toBe(true);
 });
 
-test("the live rate measures character growth within one assistant turn", () => {
+test("the live rate measures character growth within one turn", () => {
   const { panel } = loadDebugPanel();
+  const sample = (turn, chars) => ({ turn, chars, hasText: true });
   // First sample: nothing to compare against yet.
-  const first = panel.nextRate({ key: "a", length: 100 }, null, 1000);
+  const first = panel.nextRate(sample("u1", 100), null, 1000);
   expect(first.rate).toBe(null);
   // 200 characters over one second.
-  const second = panel.nextRate({ key: "a", length: 300 }, first, 2000);
+  const second = panel.nextRate(sample("u1", 300), first, 2000);
   expect(second.rate).toBe(200);
-  expect(second.length).toBe(300);
+  expect(second.chars).toBe(300);
 
-  // A new assistant turn restarts from zero instead of counting the old length as
-  // a burst of output.
-  const third = panel.nextRate({ key: "b", length: 50 }, second, 3000);
+  // A new user prompt restarts from zero instead of counting the old answer's
+  // length as a burst of output.
+  const third = panel.nextRate(sample("u2", 50), second, 3000);
   expect(third.rate).toBe(null);
-  expect(third.length).toBe(50);
-  const fourth = panel.nextRate({ key: "b", length: 150 }, third, 4000);
+  expect(third.chars).toBe(50);
+  const fourth = panel.nextRate(sample("u2", 150), third, 4000);
   expect(fourth.rate).toBe(100);
 
-  // Text that shrinks (a rewrite) never produces a negative rate.
-  expect(panel.nextRate({ key: "b", length: 10 }, fourth, 5000).rate).toBe(0);
-  // No assistant part at all means no rate.
-  expect(panel.nextRate(null, fourth, 6000).rate).toBe(null);
+  // A shrinking count means the window moved; the old samples describe a different
+  // suffix, so the measurement restarts rather than reporting a negative rate.
+  const shrunk = panel.nextRate(sample("u2", 10), fourth, 5000);
+  expect(shrunk.rate).toBe(null);
+  expect(shrunk.samples).toHaveLength(1);
 });
+
+test("a new assistant part per API call does not reset the sampling window", () => {
+  const { panel } = loadDebugPanel();
+  // One turn issues one API call per tool round, and the server appends a *new*
+  // assistant part (with its own key) for each. Keying the rate on the part identity
+  // reset the window at every tool boundary, so the rate stayed null through most
+  // of a real turn — the bug behind "输出速度一直是零".
+  const turn = (texts) => ({
+    turn: "u1",
+    chars: texts.join("").length,
+    hasText: texts.length > 0,
+    text: texts.join(""),
+  });
+  let previous = panel.nextRate(turn(["a".repeat(100)]), null, 1000);
+  expect(previous.rate).toBe(null);
+  previous = panel.nextRate(turn(["a".repeat(100), "b".repeat(100)]), previous, 2000);
+  expect(previous.rate).toBe(100);
+  // Second API call: a brand-new part, and the rate must keep going.
+  previous = panel.nextRate(turn(["a".repeat(100), "b".repeat(100), "c".repeat(200)]), previous, 3000);
+  expect(previous.rate).toBe(150);
+  expect(previous.samples).toHaveLength(3);
+  expect(previous.turn).toBe("u1");
+});
+
+test("a poll with no assistant text keeps the window instead of wiping it", () => {
+  const { panel } = loadDebugPanel();
+  const withText = panel.nextRate({ turn: "u1", chars: 200, hasText: true }, null, 1000);
+  const measured = panel.nextRate({ turn: "u1", chars: 400, hasText: true }, withText, 2000);
+  expect(measured.rate).toBe(200);
+  // A tool-only suffix, or a turn that has not produced text yet, reports nothing —
+  // but it must not discard the samples already collected.
+  const empty = panel.nextRate({ turn: "u1", chars: 0, hasText: false }, measured, 2100);
+  expect(empty.rate).toBe(200);
+  expect(empty.chars).toBe(400);
+  expect(empty.samples).toHaveLength(2);
+  expect(empty.grown).toBe(0);
+  // Text resumes: growth is measured from the last real count, not from zero. The
+  // window still holds the two earlier samples, so this is 400 chars over 2 s.
+  const resumed = panel.nextRate({ turn: "u1", chars: 600, hasText: true }, empty, 3000);
+  expect(resumed.rate).toBe(200);
+  expect(resumed.grown).toBe(200);
+});
+
+test("a sub-1 rate is shown with a decimal instead of rounding to zero", () => {
+  const { panel } = loadDebugPanel();
+  // Four characters over ten seconds is a real, slow rate; `Math.round` alone
+  // printed it as "0 字符/秒", which reads as a dead panel.
+  expect(panel.formatRate(0.4)).toBe("0.4");
+  expect(panel.formatRate(9.94)).toBe("9.9");
+  expect(panel.formatRate(10)).toBe("10");
+  expect(panel.formatRate(1234)).toBe("1,234");
+  expect(panel.formatRate(null)).toBe(null);
+});
+
+test("the speed block never reads as an all-zero frame", () => {
+  const { panel } = loadDebugPanel();
+  const html = (state) => panel.renderSpeed(state);
+  // Idle with no measurement: an explicit placeholder, not "0 字符/秒".
+  expect(html(null)).toContain("采样点");
+  expect(html(null)).not.toContain("0 字符/秒");
+  // A completed turn must not claim it is still sampling.
+  panel.state.rate = { rate: null, samples: [], turn: "u1", chars: 0, active: false };
+  expect(html(null)).not.toContain("采样中…");
+  // A measured rate is printed as measured.
+  panel.state.rate = { rate: 42, samples: [{ at: 1, chars: 1 }], turn: "u1", chars: 90, active: true };
+  expect(html(null)).toContain("42 字符/秒");
+  expect(html(null)).toContain("11 tok/s");
+});
+
 
 test("the panel observes sync responses without consuming them", () => {
   const { panel, runtime, calls, payloads } = loadDebugPanel();
@@ -1520,7 +1594,7 @@ test("the panel observes sync responses without consuming them", () => {
     expect(response.ok).toBe(true);
     expect(calls).toHaveLength(1);
     expect(panel.state.snapshot.api_activity.received_sse_events).toBe(42);
-    expect(panel.state.rate.length).toBe(4);
+    expect(panel.state.rate.chars).toBe(4);
     expect(panel.state.rate.text).toBe("你好世界");
     expect(panel.state.lastBytes).toBeGreaterThan(0);
     expect(panel.state.syncCount).toBe(1);
@@ -1607,6 +1681,29 @@ test("the panel follows the conversation the sidebar marks as active", () => {
   });
 });
 
+test("the sidebar selection is read from the attribute the core actually emits", () => {
+  // `app.js::createAgentRow` writes `data-agent-row`, so the DOM exposes
+  // `dataset.agentRow`. Reading `dataset.agentId` returned null for every row and
+  // silently disabled the "sidebar wins" rule.
+  const base = { apiPath: (path) => path, fetch: async () => ({ ok: true }) };
+  const load = (dataset) => {
+    const sandbox = {
+      MeFrontendRuntime: base,
+      document: {
+        querySelector(selector) {
+          return selector === ".agent-row.active" ? { dataset } : null;
+        },
+      },
+    };
+    new Function("globalThis", readFileSync(join(import.meta.dir, "../client/debug-panel.js"), "utf8"))(sandbox);
+    return sandbox.MeTricDebugPanel;
+  };
+  expect(load({ agentRow: "main" }).selectedAgentId()).toBe("main");
+  expect(load({ agentRow: "main", agentId: "ignored" }).selectedAgentId()).toBe("main");
+  expect(load({ agentId: "legacy" }).selectedAgentId()).toBe("legacy");
+  expect(load({}).selectedAgentId()).toBe(null);
+});
+
 test("a response without an inline range is a background poll, not the selection", () => {
   const { panel } = loadDebugPanel();
   // The server only attaches `range` to the selected agent's state, so its absence
@@ -1673,14 +1770,14 @@ test("switching conversation resets the sampling window", () => {
   payloads.push(syncPayload({ content: "第一个会话的回答", selected: "main" }));
   return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
     expect(panel.state.agentId).toBe("main");
-    expect(panel.state.rate.length).toBeGreaterThan(0);
+    expect(panel.state.rate.chars).toBeGreaterThan(0);
     // The user now selects a different conversation, and its poll arrives.
     select("other");
     payloads.push(syncPayload({ content: "短", selected: "other" }));
     return runtime.fetch("/api/workspaces/chat/sync", { method: "POST" }).then(() => {
       expect(panel.state.agentId).toBe("other");
       // A new conversation starts from zero rather than inheriting the old length.
-      expect(panel.state.rate.length).toBe(1);
+      expect(panel.state.rate.chars).toBe(1);
       expect(panel.state.syncCount).toBe(1);
     });
   });
