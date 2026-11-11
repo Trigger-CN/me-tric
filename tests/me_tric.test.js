@@ -1071,6 +1071,26 @@ test("re-observing the same write never evicts the verified read", () => {
   expect(diffModel.hunks[0].rows.some((row) => row.kind === "del" && row.text === "const alpha = 1;")).toBe(true);
 });
 
+test("a read named relatively still matches an edit named absolutely", () => {
+  const { presenters, diff } = loadToolDiff();
+  // The toolbox answers File.Read with a path relative to its own root, while the
+  // agent may address the same file with an absolute path. Both name one file.
+  presenters.imageAttachments("File.Read", readOutput(READ_SOURCE));
+
+  const absolute = "D:/WS/trime-c/me-tric/src/sum.js";
+  const absoluteArgs = { path: absolute, edits: [{ operation: "delete", start_line: 1, end_line: 1 }] };
+  const absoluteDiff = presenters.describe("File.Edit", absoluteArgs, toolOutput("succeeded", editValue()));
+  expect(absoluteDiff.diff.missing).toBe(0);
+  expect(diff.diffBlockFor("File.Edit", absoluteArgs, toolOutput("succeeded", editValue())))
+    .toContain("const alpha = 1;");
+
+  // The path only narrows the search; the hash is the real gate. A different
+  // revision behind the same suffix must still be refused.
+  const staleArgs = { path: "D:/WS/trime-c/me-tric/src/sum.js", edits: [{ operation: "delete", start_line: 1, end_line: 1 }] };
+  expect(diff.diffBlockFor("File.Edit", staleArgs, toolOutput("succeeded", editValue({ previous_hash: "bbbbbbbb" }))))
+    .toContain("原内容未记录");
+});
+
 test("the diff is placed under the card header, so no click is needed", () => {
   const { presenters, diff } = loadToolDiff();
   presenters.imageAttachments("File.Read", readOutput(READ_SOURCE));

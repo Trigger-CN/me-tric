@@ -76,6 +76,42 @@
     return text.startsWith("./") ? text.slice(2) : text;
   }
 
+  /**
+   * Every cached version list that could belong to `path`.
+   *
+   * A call may name a file absolutely (`D:/ws/x/src/a.js`) while the toolbox
+   * answers with a path relative to its own root (`src/a.js`). Both name the
+   * same file, so a relative key is also accepted when the caller's absolute
+   * path ends with it at a path-component boundary. Only an absolute path may
+   * be widened like this: two different relative names have to match exactly,
+   * otherwise a bare `a.js` would silently borrow `lib/a.js`.
+   *
+   * A relative key also has to be the *longest* such suffix, so `src/a.js` is
+   * preferred over a shorter `a.js`, and the tie is impossible because one
+   * suffix of one given string can only be one string.
+   */
+  function isAbsolutePath(key) {
+    return /^[a-z]:\//i.test(key) || key.startsWith("/");
+  }
+
+  function listsFor(path) {
+    const key = normalizePath(path);
+    if (!key) return [];
+    const exact = candidates.get(key);
+    if (exact) return [exact];
+    if (!isAbsolutePath(key)) return [];
+    let shared = 0;
+    let best = null;
+    for (const [cached, list] of candidates) {
+      if (!cached || cached.length <= shared) continue;
+      if (key.endsWith(`/${cached}`)) {
+        shared = cached.length;
+        best = list;
+      }
+    }
+    return best ? [best] : [];
+  }
+
   function resultValue(output) {
     return objectValue(output?.result?.value);
   }
@@ -183,16 +219,20 @@
   }
 
   function resolveCandidate(path, hash, total) {
-    const list = candidates.get(normalizePath(path));
-    if (!list?.length) return null;
+    const lists = listsFor(path);
+    if (!lists.length) return null;
     if (hash) {
-      const exact = list.find((item) => item.verified && item.hash === hash);
-      if (exact) return exact;
+      for (const list of lists) {
+        const exact = list.find((item) => item.verified && item.hash === hash);
+        if (exact) return exact;
+      }
     }
     if (total != null) {
-      for (let index = list.length - 1; index >= 0; index -= 1) {
-        const item = list[index];
-        if (!item.verified && item.total === total) return item;
+      for (const list of lists) {
+        for (let index = list.length - 1; index >= 0; index -= 1) {
+          const item = list[index];
+          if (!item.verified && item.total === total) return item;
+        }
       }
     }
     return null;
@@ -206,16 +246,16 @@
    * side. Comparing against the candidate's own lines is exact, not heuristic.
    */
   function latestCandidate(path, excludeLines) {
-    const list = candidates.get(normalizePath(path));
-    if (!list?.length) return null;
     const target = excludeLines ? splitFileLines(excludeLines) : null;
-    for (let index = list.length - 1; index >= 0; index -= 1) {
-      const item = list[index];
-      if (!target) return item;
-      if (item.total === target.length && target.every(
-        (text, offset) => item.lines.get(offset + 1) === text,
-      )) continue;
-      return item;
+    for (const list of listsFor(path)) {
+      for (let index = list.length - 1; index >= 0; index -= 1) {
+        const item = list[index];
+        if (!target) return item;
+        if (item.total === target.length && target.every(
+          (text, offset) => item.lines.get(offset + 1) === text,
+        )) continue;
+        return item;
+      }
     }
     return null;
   }
