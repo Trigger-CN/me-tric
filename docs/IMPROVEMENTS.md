@@ -144,6 +144,47 @@
 
 **构建约束**：`build-frontend.js` 新增两条断言——`tool-diff.js` 必须晚于 `tool-presenters.js`（否则没有可包裹的注册表）且早于 `app.js`（否则核心已捕获旧引用）。
 
+### A12. 输入框粘贴图片（`paste-image.js` / `.css`）
+
+**需求**：对话输入框可以直接粘贴剪贴板里的图片，缩略图堆叠在输入框**左侧**并带 `上传中 → 已上传 / 失败` 状态；发送时只把图片路径交给 agent。
+
+**约束（已验证，不是推测）**：
+
+1. 用户提示词只有文本：`submit_user_prompt(agent_id, content: String)` → `UserPromptEvent { content }`，模型看到的是 `<user_prompt>` 里的 XML 转义文本。所以**没有给提示词挂图的通道**。
+2. 图片内容只能由工具产生：`EventDataBase::append_image_content` 硬校验 `crate::image_toolbox::stores_image_content(&call.name)`，只放行 `Image.View` / `Image.Send` / `WebBrowser.Snapshot`。
+3. `Image.View` 读本地文件：`data:` / `http(s)://` / `file:` / 绝对路径 / **相对路径按 `workspace.join(path)` 解析**，上限 60 MiB。
+4. 工作区在服务端，客户端**没有写文件的命令**（`invoke_handler` 只有窗口、设备、`gateway_request`、下载）。远程 Gateway 部署时客户端磁盘也不是服务端磁盘。
+5. 剪贴板图片不需要 Tauri 插件：`paste` 事件的 `clipboardData.items` 里 `kind === "file" && type.startsWith("image/")` 直接 `getAsFile()` 就能拿到 Blob。
+
+**做法**：上传到 `workspace/.me/attachments/`，再把相对路径写进提示词（每张图一行 `[图片] <相对路径>`），由 agent 自己决定要不要 `Image.View`——不发任何指令句。
+
+上传走服务端自己的文件 API（三步，全部在 Gateway 白名单 `files/*` 内）：
+
+1. `POST /api/files/list` `{path: null, roots: false}` → 返回的 `path` 就是 workspace 绝对路径（`host_files.rs:243-246` 空 path 解析为 `self.workspace`）。这是唯一可靠的来源。
+2. `POST /api/files/mkdir` `{parent, name}` 建 `.me` 再建 `.me/attachments`。服务端用的是非递归 `fs::create_dir`，目录已存在会报错，所以“已存在”按正常情况处理（失败后 `files/list` 找回该目录）。
+3. `POST /api/files/uploads/create` → 循环 `uploads/chunk`（384 KiB 一片，服务端上限 512 KiB）→ `uploads/finish`，校验 `state === "completed"`，失败则 `uploads/cancel`。
+
+几个具体取舍：
+
+- **`conflict_policy: "keep_both"`**：不给策略会返回 `requires_confirmation` 且 `upload: null`（死路）；`skip` 直接丢弃。文件名带时间戳 + 随机后缀，正常情况下不会碰撞。
+- **相对化路径**：从 `target_path` 减去 workspace 绝对路径，因为 `Image.View` 是按 workspace 解析相对路径的；不在 workspace 内则保留绝对路径（宁可长也不指向错文件）。
+- **空输入框也要能发图**：`app.js::submitOrOpenSendSettings()` 在输入框为空时打开“发送设置”抽屉而不是提交，所以发送前把路径行填进 `#prompt-input`（并派发 `input` 事件，让草稿同步跟上）。
+- **只清空已接受的提交**：`fetch` 拦截器看响应是否被接受，被拒时保留缩略图供重试；上传中/失败（无 `path`）的缩略图永远不进提示词。
+- **不重复写路径**：同一路径在文本里已存在则不再追加，因为一次提交可能经过“预填”与“请求体重写”两道。
+
+**接入点**：替换 `globalThis.MeFrontendRuntime`（`Object.create` 出的原型子对象，只覆写 `fetch`），因此其余 getter / 方法全部保留（有测试断言）。必须**早于 `app.js` 加载**：核心在加载时就把这个全局存进模块作用域，之后再换无效——这与 `tool-diff.js` 的“运行时解析”不同，装配脚本因此各自断言顺序。
+
+**DOM**：缩略图容器插在 `.prompt-input-stack` **之前**，给 `.composer-shell` 加一个类切成两列网格（`auto minmax(0,1fr)`），动作行跨两列；堆叠用负 `margin-left` + 递增 `z-index` + hover 抬升。`frontend/` 一行未改。
+
+被否掉的方案：给 `UserPrompt` 加图片字段（需要改服务端协议、事件校验和上下文投影，违反 C1）；前端直接写本地文件（`fetch` 被拦截成 `gateway_request`，且无原生写文件命令）；本地写文件后传绝对路径（工作区在服务端）；把 `data:` URL 写进提示词（会被 XML 转义，且几十 MB base64 进上下文不可接受）；加 Tauri 剪贴板插件（`paste` 事件已经够用）。
+
+**已接受的残留风险**：
+
+- 缩略图只存在内存里，刷新后不保留（避免与草稿 revision 协议缠斗；已上传的文件仍在服务端）。
+- 非多模态模型会拒绝 `Image.View`，而客户端**在发送前无法知道**模型是否支持图片——这一点没有任何本地信号可查。拒绝只会以工具错误的形式出现在对话里，缩略图不会预警。
+- 本项只能在 bun 测试与装配脚本里验证；缩略图的实际排版、堆叠与滚动未经真实窗口实测。
+
+
 ---
 
 ## B. 计划中（按建议顺序）

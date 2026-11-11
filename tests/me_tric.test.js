@@ -1152,3 +1152,182 @@ test("the diff module is assembled after the registry it decorates", () => {
   // resolves MeToolPresenters at call time, so it must sit between them.
   expect(build).toContain('html.indexOf("/tool-diff.js") > html.indexOf("/tool-presenters.js")');
 });
+
+// `client/paste-image.js` cannot attach an image to a prompt (the server's prompt
+// payload is a string), so it uploads the blob through the file API and appends a
+// `[图片] <path>` line. These tests cover the pure path/name rules and the request
+// rewrite, which is the whole contract the shared core depends on.
+
+function loadPasteImage({ ok = true, body = { ok: true } } = {}) {
+  const calls = [];
+  const base = {
+    devicePreferences: { getItem: () => null },
+    apiPath: (path, workspaceId) => `/api/workspaces/${workspaceId || "chat"}${String(path).slice(4)}`,
+    async fetch(input, options) {
+      calls.push({ input, options });
+      return {
+        ok,
+        status: ok ? 200 : 500,
+        clone() { return { async json() { return body; } }; },
+      };
+    },
+  };
+  const sandbox = { MeFrontendRuntime: base };
+  new Function("globalThis", readFileSync(join(import.meta.dir, "../client/paste-image.js"), "utf8"))(sandbox);
+  return { api: sandbox.MeTricPasteImage, runtime: sandbox.MeFrontendRuntime, base, calls };
+}
+
+/** A ready chip, i.e. one whose upload already returned a workspace-relative path. */
+function readyChip(path) {
+  return { state: "ready", path, url: "", node: null };
+}
+
+function submitBody(content) {
+  return { method: "POST", body: JSON.stringify({ command: "submit_user_prompt", agent_id: "main", content }) };
+}
+
+test("a pasted image is named as one safe path component", () => {
+  const { api } = loadPasteImage();
+  expect(api.imageExtension("image/png")).toBe("png");
+  expect(api.imageExtension("IMAGE/JPEG")).toBe("jpg");
+  expect(api.imageExtension("image/svg+xml")).toBe("svg");
+  // An unknown or missing type still has to produce a usable extension.
+  expect(api.imageExtension("application/octet-stream")).toBe("png");
+  expect(api.imageExtension("")).toBe("png");
+
+  const name = api.attachmentName(0, "png", { now: Date.UTC(2026, 5, 12, 14, 30, 15), salt: 0.5 });
+  expect(name).toMatch(/^paste-\d{8}-\d{6}-[0-9a-f]{6}-1\.png$/);
+  // The server's `validate_component` rejects separators, drive colons and the
+  // internal `.me-upload-*.tmp` pattern.
+  expect(name).not.toContain("/");
+  expect(name).not.toContain("\\");
+  expect(name).not.toContain(":");
+  expect(name.startsWith(".me-upload-")).toBe(false);
+
+  // Distinct pastes at the same second must not collide, or the second upload
+  // would target the first one's file.
+  const first = api.attachmentName(1, "png", { now: 0, salt: 0.1 });
+  const second = api.attachmentName(2, "png", { now: 0, salt: 0.2 });
+  expect(first).not.toBe(second);
+});
+
+test("an upload is addressed relative to the workspace, as Image.View expects", () => {
+  const { api } = loadPasteImage();
+  expect(api.relativeTo("D:/WS/proj", "D:/WS/proj/.me/attachments/a.png")).toBe(".me/attachments/a.png");
+  // Windows paths arrive with either separator, and the drive letter may differ in case.
+  expect(api.relativeTo("D:\\WS\\proj", "D:/WS/proj/.me/attachments/a.png")).toBe(".me/attachments/a.png");
+  expect(api.relativeTo("d:/ws/proj/", "D:/WS/proj/.me/attachments/a.png")).toBe(".me/attachments/a.png");
+  // A path outside the workspace stays absolute: it is still readable, and silently
+  // shortening it would point Image.View at the wrong file.
+  expect(api.relativeTo("D:/WS/proj", "D:/other/a.png")).toBe("D:/other/a.png");
+  expect(api.relativeTo("D:/WS/proj", "D:/WS/proj")).toBe("");
+});
+
+test("the prompt gains one path line per image, and only once", () => {
+  const { api } = loadPasteImage();
+  expect(api.contentWithImages("", ["a.png"])).toBe("[图片] a.png");
+  expect(api.contentWithImages("看看这个\n\n", ["a.png", "b.png"]))
+    .toBe("看看这个\n[图片] a.png\n[图片] b.png");
+  // No images means no trailing whitespace surgery beyond the trim.
+  expect(api.contentWithImages("看看这个  ", [])).toBe("看看这个");
+  expect(api.contentWithImages("", [])).toBe("");
+
+  expect(api.hasImageLine("[图片] a.png", "a.png")).toBe(true);
+  expect(api.hasImageLine("[图片] b.png", "a.png")).toBe(false);
+
+  // One submission can be reached twice: the box is prefilled when it was empty and
+  // the request body is rewritten when it was not. The path must not appear twice.
+  const once = api.submissionContent("", ["a.png"]);
+  expect(api.submissionContent(once, ["a.png"])).toBe(once);
+  expect(api.submissionContent("看看", ["a.png", "b.png"])).toBe("看看\n[图片] a.png\n[图片] b.png");
+});
+
+test("only clipboard file items with an image type are taken over", () => {
+  const { api } = loadPasteImage();
+  expect(api.isImageItem({ kind: "file", type: "image/png" })).toBe(true);
+  expect(api.isImageItem({ kind: "file", type: "IMAGE/PNG" })).toBe(true);
+  expect(api.isImageItem({ kind: "string", type: "image/png" })).toBe(false);
+  expect(api.isImageItem({ kind: "file", type: "text/plain" })).toBe(false);
+  expect(api.isImageItem(null)).toBe(false);
+});
+
+test("the module patches the runtime without losing any of its other members", () => {
+  const { api, runtime, base } = loadPasteImage();
+  expect(typeof api.imageExtension).toBe("function");
+  // `app.js` captures MeFrontendRuntime once at load time, so the replacement has
+  // to be in place before it runs — and must keep every member it does not touch.
+  expect(runtime).not.toBe(base);
+  expect(runtime.apiPath("/api/files/list", "chat")).toBe("/api/workspaces/chat/files/list");
+  expect(typeof runtime.devicePreferences.getItem).toBe("function");
+  expect(runtime.fetch).not.toBe(base.fetch);
+
+  // Re-installing must not stack a second wrapper.
+  const once = runtime.fetch;
+  api.install();
+  expect(loadPasteImage().runtime.fetch).toBeTypeOf("function");
+  expect(runtime.fetch).toBe(once);
+});
+
+test("an image-only message still submits, because the box is prefilled", () => {
+  const { api, runtime, calls } = loadPasteImage();
+  api.attachments.push(readyChip(".me/attachments/a.png"));
+  return runtime.fetch("/api/workspaces/chat/command", submitBody(""))
+    .then((response) => {
+      expect(response.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(JSON.parse(calls[0].options.body).content).toBe("[图片] .me/attachments/a.png");
+      // The upload is consumed only once the submission is accepted.
+      expect(api.attachments).toHaveLength(0);
+    });
+});
+
+test("the paths ride along with whatever the user typed", () => {
+  const { api, runtime, calls } = loadPasteImage();
+  api.attachments.push(readyChip(".me/attachments/a.png"));
+  return runtime.fetch("/api/workspaces/chat/command", submitBody("这是什么")).then(() => {
+    expect(JSON.parse(calls[0].options.body).content).toBe("这是什么\n[图片] .me/attachments/a.png");
+    expect(api.attachments).toHaveLength(0);
+  });
+});
+
+test("a still-uploading or failed chip never reaches the model", () => {
+  const { api, runtime, calls } = loadPasteImage();
+  api.attachments.push({ state: "uploading", path: "", url: "", node: null });
+  api.attachments.push({ state: "failed", path: "", url: "", node: null });
+  return runtime.fetch("/api/workspaces/chat/command", submitBody("看看")).then(() => {
+    // Nothing was rewritten, so the request is the core's own body untouched.
+    expect(calls[0].options).toBeDefined();
+    expect(JSON.parse(calls[0].options.body).content).toBe("看看");
+    expect(api.attachments).toHaveLength(2);
+  });
+});
+
+test("a rejected submission keeps its chips so it can be retried", () => {
+  const { api, runtime } = loadPasteImage({ ok: false, body: { ok: false, error: "boom" } });
+  api.attachments.push(readyChip(".me/attachments/a.png"));
+  return runtime.fetch("/api/workspaces/chat/command", submitBody("看看")).then((response) => {
+    expect(response.ok).toBe(false);
+    expect(api.attachments).toHaveLength(1);
+  });
+});
+
+test("every other request passes straight through the patched runtime", () => {
+  const { api, runtime, calls } = loadPasteImage();
+  api.attachments.push(readyChip(".me/attachments/a.png"));
+  return runtime.fetch("/api/workspaces/chat/snapshot", { cache: "no-store" }).then(() => {
+    expect(calls[0].input).toBe("/api/workspaces/chat/snapshot");
+    expect(calls[0].options.body).toBeUndefined();
+    // Only a submit_user_prompt consumes the chips.
+    expect(api.attachments).toHaveLength(1);
+  });
+});
+
+test("the paste module is assembled before the core that captures the runtime", () => {
+  const build = readFileSync(join(import.meta.dir, "../client/build-frontend.js"), "utf8");
+  expect(build).toContain('["paste-image.js", "paste-image.js"]');
+  expect(build).toContain('["paste-image.css", "paste-image.css"]');
+  expect(build).toContain('<script src="/paste-image.js"></script>');
+  expect(build).toContain('<link rel="stylesheet" href="/paste-image.css">');
+  // app.js reads MeFrontendRuntime at load time, so the patch must already be applied.
+  expect(build).toContain('html.indexOf("/paste-image.js") < html.indexOf("/app.js")');
+});

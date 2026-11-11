@@ -20,6 +20,7 @@ me-tric/
 │   ├── device-manager.{js,css}
 │   ├── agent-inspector.{js,css}
 │   ├── tool-diff.{js,css}     # 工具卡片的文件修改 diff
+│   ├── paste-image.{js,css}   # 输入框粘贴图片：上传到 .me 并附路径
 │   └── build-frontend.js      # 把 frontend/ + client/ + vendor 装配成 frontend-dist/
 ├── frontend/                  # 共享权威前端核心（来自 me-s 的 src/webui，逐字节复制）
 ├── transport/                 # Noise 加密 HTTP 传输层（me-transport crate）
@@ -40,7 +41,7 @@ me-tric/
 | --- | --- | --- |
 | `globalThis.MeFrontendRuntime` 钩子 | `client/client-runtime.js` | 需要影响共享核心行为的改动（fetch、endpoint、capabilities、偏好存储……） |
 | 独立脚本，在 `app.js` 之后加载 | `client/device-manager.js`、`client/agent-inspector.js` | 新增独立 UI（浮层面板），不侵入共享 DOM 渲染模型 |
-| 包裹共享全局对象，在 `app.js` **之前**加载 | `client/tool-diff.js` | 需要改变共享核心渲染结果的改动（工具卡片内容）；`app.js` 在调用时才解析 `MeToolPresenters`，卡片构建器则在 `DOMContentLoaded` 后包裹 |
+| 包裹共享全局对象，在 `app.js` **之前**加载 | `client/tool-diff.js`、`client/paste-image.js` | 需要改变共享核心行为的改动；`app.js` 在调用时才解析 `MeToolPresenters`，而 `MeFrontendRuntime` 则是加载时读取一次，所以必须在它之前替换 |
 
 `build-frontend.js` 里三张资产表（`sharedAssets` / `clientAssets` / `vendorAssets`）就是这个边界：新增功能模块只往 `clientAssets` 里加一行。
 
@@ -95,8 +96,8 @@ cargo build            # 或 bunx @tauri-apps/cli@2.11.3 build
 5. 改写 `index.html`：
    - 标题 `ME` → `ME Tric`
    - **删除** `<script src="/transport.js"></script>`
-   - 在 `/theme.css` 之后插入四份客户端样式表
-   - 在 `/app.js` **之前**插入 `agent-inspector.js`、`device-manager.js` 与 `tool-diff.js`（后者必须排在 `tool-presenters.js` 之后）
+   - 在 `/theme.css` 之后插入五份客户端样式表
+   - 在 `/app.js` **之前**插入 `agent-inspector.js`、`device-manager.js`、`tool-diff.js`（必须排在 `tool-presenters.js` 之后）与 `paste-image.js`（必须早于 `app.js` 读取 `MeFrontendRuntime`）
    - 登录页文案改为"输入服务地址和访问密码。"
 6. 逐条断言，任一失败即抛 `me-tric frontend assembly failed: <原因>`。
 
@@ -112,10 +113,11 @@ frontend-dist/index.html
   ├── device-manager.js      ← 面板 1（直接调用 Tauri invoke）
   ├── tool-presenters.js     ← 共享核心：工具卡片注册表 globalThis.MeToolPresenters
   ├── tool-diff.js           ← 包裹 MeToolPresenters + 卡片构建器，内联文件修改 diff
-  └── app.js                 ← 共享核心，原封不动（运行时才解析 MeToolPresenters）
+  ├── paste-image.js         ← 替换 MeFrontendRuntime：粘贴图片上传 + 提示词附路径
+  └── app.js                 ← 共享核心，原封不动（加载时读取 MeFrontendRuntime）
 ```
 
-`tool-diff.js` 是唯一一个"改变共享核心渲染结果"的模块。它不碰 `app.js`：共享核心在每次渲染工具卡片时才去读 `globalThis.MeToolPresenters`，因此在它之前替换这个冻结对象就能生效；卡片构建器（`createMessageNode` / `updateToolCardNode`）要等 `app.js` 执行后才有，所以在 `DOMContentLoaded` 时再包一次。装配脚本对此有三条顺序断言（`tool-presenters.js` < `tool-diff.js` < `app.js`）。
+`tool-diff.js` 与 `paste-image.js` 都是“改变共享核心行为”的模块，但切入点不同：前者不碰 `app.js`，因为共享核心在每次渲染工具卡片时才去读 `globalThis.MeToolPresenters`，所以在它之前替换这个冻结对象就能生效（卡片构建器 `createMessageNode` / `updateToolCardNode` 要等 `app.js` 执行后才有，所以在 `DOMContentLoaded` 时再包一次）；后者替换的是 `globalThis.MeFrontendRuntime` 本身——`app.js` 在加载时就把它存进模块作用域，之后再换就无效了。装配脚本对两者各有顺序断言。
 ```
 
 ### 数据出口只有一个
@@ -194,6 +196,25 @@ frontend-dist/index.html
 
 降级行为：编辑进行中、失败、或输出缺失时不产生 diff（卡片与上游逐字节一致）；单卡片最多渲染 400 行；`File.EditBytes` 按字节计数，不假装是行 diff。
 
+### 粘贴图片（`paste-image.js`）
+
+输入框支持直接粘贴剪贴板里的图片。粘贴后缩略图堆叠显示在输入框**左侧**，并带有 `上传中 → 已上传 / 失败` 的状态；发送时把图片路径写进提示词，由 agent 自己决定要不要 `Image.View` 去读。
+
+**为什么只能放路径，不能直接传图。** 服务端给用户的提示词只有 `content: String`（`submit_user_prompt` → `UserPromptEvent { content }`），模型看到的是 `<user_prompt>` 里的 XML 转义文本；而 `EventDataBase::append_image_content` 只允许 `Image.View` / `Image.Send` / `WebBrowser.Snapshot` 三个工具产生图片内容。所以客户端没有“给提示词挂图”的通道，只能把路径放到 agent 眼前。
+
+**为什么走上传而不是写本地文件。** 工作区在服务端：远程 Gateway 部署时客户端磁盘不是服务端磁盘，而原生桥接里根本没有写文件的命令（`invoke_handler` 只有窗口、设备、`gateway_request`、下载相关）。所以图片用服务端自己的 `files/uploads/*` 接口传到 `workspace/.me/attachments/`，再把 `target_path` 减去 `files/list` 返回的 workspace 绝对路径，得到 `Image.View` 能直接解析的相对路径。
+
+几个具体取舍：
+
+- 目录用 `files/mkdir` 逐级建（`.me` → `.me/attachments`），因为服务端用的是非递归 `fs::create_dir`，目录已存在会报错，所以“已存在”按正常情况处理。
+- 上传用 `conflict_policy: "keep_both"`：不给策略会返回 `requires_confirmation` 且没有 upload，`skip` 则直接丢弃。文件名带时间戳与随机后缀，正常情况下不会碰撞。
+- 提示词里每张图一行 `[图片] <相对路径>`，不发任何指令句；重复发送不会把同一路径写两次。
+- 输入框为空时会在发送前把路径行填进去，否则 `app.js` 会当成空消息、去开“发送设置”抽屉而不是发出去。
+- 只有提交被接受才清空缩略图；上传中/失败的缩略图永远不进提示词。
+- 接入点是替换 `globalThis.MeFrontendRuntime`（原型子对象，只覆写 `fetch`），因为 `app.js` 在加载时就把这个全局存进模块作用域了。
+- 缩略图容器插在 `.prompt-input-stack` 之前，靠给 `.composer-shell` 加类切成两列网格；`frontend/` 一行未改。
+
+
 ---
 
 ## 5. 数据与存储
@@ -224,7 +245,7 @@ frontend-dist/index.html
 bun test tests/me_tric.test.js
 ```
 
-30 项测试（`30 pass, 0 fail`），覆盖：
+42 项测试（`42 pass, 0 fail`，445 expect），覆盖：
 
 - 原生 UTF-8 JSON 响应 + 前端静态资源仍走浏览器 `fetch`
 - 就绪门控（`data-me-tric-startup="pending"` → `visibility:hidden` → `windowReady()` 一次性放行）
@@ -237,11 +258,12 @@ bun test tests/me_tric.test.js
 - 记住设备的增删与在线状态
 - macOS 关闭=隐藏、Reopen=恢复而非新开窗口
 - page-close JSON beacon 走原生传输
-- 前端装配（`frontend/` 来源、新模块注册、`/transport.js` 必须 absent、`tool-diff.js` 的加载顺序）
+- 前端装配（`frontend/` 来源、新模块注册、`/transport.js` 必须 absent、`tool-diff.js` 与 `paste-image.js` 的加载顺序）
 - 版本一致性（`package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 全为 `0.1.0`）
 - 下载取消的注册时序与预取消
 - 设备列左栏、非激活保存不抢 target
-- **文件修改 diff**：有 `File.Read` 时渲染真实删除行；无来源时只给行号不编造内容；hash 不匹配的旧读取必须被拒绝；编辑失败/进行中不产生 diff；`.tool-details` 与上游逐字节一致；整文件写入与字节编辑各自的口径；diff 插在卡片头部与详情之间（折叠状态也可见、重复同步不堆叠、点击不切换卡片）；两个卡片构建器只包一次；反复观察同一份写入文本不会把已验证的读取挤出缓存
+反复观察同一份写入文本不会把已验证的读取挤出缓存
+- **粘贴图片**：文件名是单一安全路径组件且不碰撞；上传地址相对化到 workspace（`Image.View` 的口径）；提示词只加一行路径且不重复；只有 `kind=file` 且 `image/*` 的剪贴板项被接管；替换运行时后其余成员完好且不重复包裹；空输入框发图片也能发出；上传中/失败的缩略图不进提示词；提交被拒时保留缩略图；其他请求直接透传
 
 > 测试顶部把 `readFileSync` 包了一层，统一 `\r\n` → `\n`。仓库在 Windows 上以 CRLF 检出，而多处断言写的是 `\n`。上游 `me-s` 在同一台机器上跑自己的测试套件会有 3 个失败，原因正是这个；本项目通过归一化解决。
 
