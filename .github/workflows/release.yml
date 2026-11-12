@@ -58,13 +58,22 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: The tag must equal the packaged version
+      - name: The tag must match the packaged version
         shell: bash
         run: |
           version=$(grep -m1 '^version = "' client/src-tauri/Cargo.toml | cut -d'"' -f2)
           tag="${GITHUB_REF_NAME#v}"
           echo "tag=${GITHUB_REF_NAME} package=${version}"
-          if [ "${tag}" != "${version}" ]; then
+
+          # A pre-release tag carries a suffix the manifest cannot hold, so
+          # v0.1.0-test.1 legitimately belongs to a 0.1.0 build. Compare the
+          # base only, and keep anything that is still a dotted number.
+          base="${tag%%-*}"
+          if ! printf '%s' "${base}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::tag ${GITHUB_REF_NAME} is not v<major>.<minor>.<patch>[-suffix]"
+            exit 1
+          fi
+          if [ "${base}" != "${version}" ]; then
             echo "::error::tag ${GITHUB_REF_NAME} does not match the packaged version ${version}"
             exit 1
           fi

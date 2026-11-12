@@ -109,7 +109,8 @@ cargo build            # 或 bunx @tauri-apps/cli@2.11.3 build
 `.github/workflows/release.yml` 在推送 `v*` tag 时自动完成构建与发布：
 
 ```bash
-git tag v0.1.0
+git tag v0.1.0                 # 正式版
+git tag v0.1.0-test.1 && git push origin v0.1.0-test.1   # 试跑，得到 pre-release
 git push origin v0.1.0
 ```
 
@@ -117,13 +118,14 @@ git push origin v0.1.0
 
 | Job | Runner | 做什么 |
 | --- | --- | --- |
-| `verify` | `windows-latest` | **tag 必须等于 `client/src-tauri/Cargo.toml` 的 `version`** → `bun test` → 前端装配 |
+| `verify` | `windows-latest` | **tag 的 base 版本必须等于 `client/src-tauri/Cargo.toml` 的 `version`** → `bun test` → 前端装配 |
 | `build` | 矩阵 | Windows x64 → NSIS `.exe`；macOS universal → `.dmg`（两个架构同时安装后合并） |
 | `release` | `ubuntu-latest` | 汇总产物 → `gh release create`（已存在则 `gh release upload --clobber`）→ 把"未签名"说明插到自动 changelog 之上 |
 
 三个刻意的选择：
 
 - **版本以 tag 为准的门禁**。`tests/me_tric.test.js` 已经把 `Cargo.toml` / `Cargo.lock` / `tauri.conf.json` / `package.json` 锁在同一个值上，但锁不住"tag 打错"。所以先在 `verify` 里比一次，避免出现 `v0.2.0` 的 tag 里装着 `0.1.0` 的二进制。
+  比的是 **base 版本**（`${tag%%-*}`），不是整个 tag：`-test.1` / `-rc.1` 这类预发布后缀 Cargo 的 `version` 字段装不下，所以它们本就属于同一个版本号的构建。`v0.1.0-test.1` 合法，`v0.0.0-test.1` 与 `v0.1.1-test.1` 会被拒。
 - **不构建 Linux**。`bundle.targets` 是 `["app"]`（macOS 专有格式），源码里 `target_os = "linux"` 出现 **0 次**，窗口造型完全建在 ~40 处 Windows 分支和打过 patch 的 wry 运行时上。把一个从未编译过的平台塞进流水线，只会让它在每次发版时变红。等有人真的在 Linux 上手工构建通了再加。
 - **产物未签名**。仓库没有签名身份，Windows 安装包会触发 SmartScreen，macOS 只有 ad-hoc 签名会被 Gatekeeper 拦。release note 里明说这一点，而不是让用户第一次启动时才发现。
 

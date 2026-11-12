@@ -766,6 +766,14 @@ describe("ME Tric native adapter", () => {
     expect(workflow).toContain('client/src-tauri/Cargo.toml');
     expect(version).toBeTruthy();
 
+    // The gate must compare the BASE version, not the whole tag: a pre-release
+    // suffix cannot live in Cargo's `version`, so v0.1.0-test.1 is a 0.1.0
+    // build. Comparing the whole tag would reject every pre-release.
+    expect(workflow).toContain("base=\"${tag%%-*}\"");
+    expect(workflow).toContain("if [ \"${base}\" != \"${version}\" ]");
+    // ...but the base still has to be a real three-part version.
+    expect(workflow).toContain("[0-9]+\\.[0-9]+\\.[0-9]+$");
+
     // Bundling is driven by the CLI the README documents, not a floating major.
     expect(workflow).toContain("@tauri-apps/cli@2.11.3");
 

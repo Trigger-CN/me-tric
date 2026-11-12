@@ -320,7 +320,9 @@
 
 推 `v*` tag 即自动出包并发 Release。全流程三个 job：`verify` → 矩阵 `build` → `release`。
 
-**1. 为什么先做版本门禁。** `tests/me_tric.test.js` 已经把 `Cargo.toml` / `Cargo.lock` / `tauri.conf.json` / `package.json` 锁在同一个值上，但它锁不住 tag 本身。所以 `verify` 里先做一次 `tag -v == Cargo.toml.version`，否则会发出一个叫 `v0.2.0`、里面装的却是 `0.1.0` 的包。测试与装配都跑在 `windows-latest`：这套断言是在 Windows/CRLF 环境下写的，换平台等于换了一层没验证过的前提。
+**1. 为什么先做版本门禁。** `tests/me_tric.test.js` 已经把 `Cargo.toml` / `Cargo.lock` / `tauri.conf.json` / `package.json` 锁在同一个值上，但它锁不住 tag 本身。所以 `verify` 里先比对一次，否则会发出一个叫 `v0.2.0`、里面装的却是 `0.1.0` 的包。测试与装配都跑在 `windows-latest`：这套断言是在 Windows/CRLF 环境下写的，换平台等于换了一层没验证过的前提。
+
+   **比对的是 base 版本，不是整个 tag。** 预发布 tag 带的后缀（`-test.1` / `-rc.1`）Cargo 的 `version` 字段根本装不下，所以 `v0.1.0-test.1` 本来就该属于一个 `0.1.0` 的构建。门禁先抽出 `${tag%%-*}`，要求它形如 `^\d+\.\d+\.\d+$`，再与清单比对。结果是 `v0.1.0-test.1` 与 `v0.1.0-rc.1` 合法，而 `v0.1.1-test.1`、`v0.0.0-test.1`、`v0.2.0`、`v0.1`、`v0.1.0.0`、`vfoo` 仍被拒——**同一个版本号下可以预发布，不能偷换数字**。这段逻辑用 `gate-test.sh` 跑了 12 个用例逐一验证。
 
 **2. 为什么不构建 Linux。** 三个硬证据：`tauri.conf.json` 的 `bundle.targets` 是 `["app"]`（macOS 专有格式）；`client/src-tauri/src` 下 `target_os = "linux"` 出现 **0 次**；窗口造型（圆角、阴影、`WM_NCHITTEST`）全部建在 ~40 处 `cfg(target_os = "windows")` 分支和一个本地 patch 过的 `tauri-runtime-wry` 上。往流水线里加一个从未编译过的平台，代价是每次发版都变红，收益为零。真要支持，应该先在 Linux 上手工构建并修完编译错误，再加一行矩阵。
 
@@ -333,7 +335,7 @@
 **已接受的残留风险**：
 
 - 产物未签名：Windows 安装包触发 SmartScreen，macOS 只有 ad-hoc 签名会被 Gatekeeper 拦。release note 里明写了绕过方式，但这是真实摩擦。
-- 流水线本身**无法本地验证**：YAML 解析、结构断言、8 个内嵌 shell 脚本的 `bash -n` 都能本地跑通，但矩阵构建与 `gh release` 只在 GitHub Runner 上才真正执行。第一次发版前建议先推一个 `v0.0.0-test.1` 试跑。
+- 流水线本身**无法本地验证**：YAML 解析、结构断言、8 个内嵌 shell 脚本的 `bash -n`、以及上面那段版本门禁（12 个用例）都能本地跑通，但矩阵构建与 `gh release` 只在 GitHub Runner 上才真正执行。第一次试跑用 **`v0.1.0-test.1`**（必须与当前清单版本一致，`v0.0.0-test.1` 会被门禁拒），会得到一份 pre-release。
 - 上游 `tauri` crate 版本是 2.11.5 而 CLI 固定 2.11.3；当前能构建（`--ignore-version-mismatches` 没用上就不报错），但将来升级时要同步改 `TAURI_CLI`。
 
 ---
