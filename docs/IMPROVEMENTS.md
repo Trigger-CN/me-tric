@@ -316,6 +316,25 @@
 
 **验证**：`bun test` 74 pass / 0 fail / 630 expect（新增一条断言：两个选择器同在一规则块、值为等宽栈、该块内不得出现 `font-size`）；`bun ./build-frontend.js` 返回 `build=0`，装配后的 `client/frontend-dist/client.css` 确认包含这两行；`git diff --stat -- frontend` 为空。**字体观感需要真实窗口确认**，本环境无法渲染 WebView。
 
+### A16. tag 触发的 GitHub Release 流水线（`.github/workflows/release.yml`）
+
+推 `v*` tag 即自动出包并发 Release。全流程三个 job：`verify` → 矩阵 `build` → `release`。
+
+**1. 为什么先做版本门禁。** `tests/me_tric.test.js` 已经把 `Cargo.toml` / `Cargo.lock` / `tauri.conf.json` / `package.json` 锁在同一个值上，但它锁不住 tag 本身。所以 `verify` 里先做一次 `tag -v == Cargo.toml.version`，否则会发出一个叫 `v0.2.0`、里面装的却是 `0.1.0` 的包。测试与装配都跑在 `windows-latest`：这套断言是在 Windows/CRLF 环境下写的，换平台等于换了一层没验证过的前提。
+
+**2. 为什么不构建 Linux。** 三个硬证据：`tauri.conf.json` 的 `bundle.targets` 是 `["app"]`（macOS 专有格式）；`client/src-tauri/src` 下 `target_os = "linux"` 出现 **0 次**；窗口造型（圆角、阴影、`WM_NCHITTEST`）全部建在 ~40 处 `cfg(target_os = "windows")` 分支和一个本地 patch 过的 `tauri-runtime-wry` 上。往流水线里加一个从未编译过的平台，代价是每次发版都变红，收益为零。真要支持，应该先在 Linux 上手工构建并修完编译错误，再加一行矩阵。
+
+**3. 为什么 Windows 也显式传 `--target`。** 两个原因：`dtolnay/rust-toolchain` 的 `targets` 留空会变成空字符串输入；而一旦传了 `--target`，cargo 产物就从 `target/release/` 挪到 `target/<triple>/release/`，即使 triple 与宿主相同。产物 glob 必须跟着变，否则 `upload-artifact` 会以 `if-no-files-found: error` 直接失败。
+
+**4. 为什么 `gh release create` 不用 `--notes`。** `--generate-notes` 与 `--notes` / `--notes-file` 互斥，同时给会被 gh 拒绝。分两步：先 `create --generate-notes`，再 `gh release view --json body` 取回自动 changelog，把"产物未签名"的说明拼在前面，用 `gh release edit --notes-file` 写回。
+
+**5. 幂等。** 重跑同一个 tag 不能因为 "release already exists" 失败，所以先 `gh release view` 探测，存在则 `gh release upload --clobber` 覆盖资源。`concurrency` 按 ref 分组且 `cancel-in-progress: false`，避免两次推送互相关掉对方。
+
+**已接受的残留风险**：
+
+- 产物未签名：Windows 安装包触发 SmartScreen，macOS 只有 ad-hoc 签名会被 Gatekeeper 拦。release note 里明写了绕过方式，但这是真实摩擦。
+- 流水线本身**无法本地验证**：YAML 解析、结构断言、8 个内嵌 shell 脚本的 `bash -n` 都能本地跑通，但矩阵构建与 `gh release` 只在 GitHub Runner 上才真正执行。第一次发版前建议先推一个 `v0.0.0-test.1` 试跑。
+- 上游 `tauri` crate 版本是 2.11.5 而 CLI 固定 2.11.3；当前能构建（`--ignore-version-mismatches` 没用上就不报错），但将来升级时要同步改 `TAURI_CLI`。
 
 ---
 

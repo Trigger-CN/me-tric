@@ -747,6 +747,47 @@ describe("ME Tric native adapter", () => {
     expect(clientMain).toContain('println!("me-tric {}", env!("CARGO_PKG_VERSION"))');
     expect(clientMain).toContain("me_tric_lib::run()");
   });
+
+  test("releases only from a tag that matches the packaged version", () => {
+    const root = join(import.meta.dir, "..");
+    const workflow = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
+    const cargo = readFileSync(join(root, "client/src-tauri/Cargo.toml"), "utf8");
+    const version = /^version = "(.+)"$/m.exec(cargo)?.[1];
+
+    // Tag-triggered only: a branch push must not publish anything.
+    expect(workflow).toContain('      - "v*"');
+    expect(workflow).toContain("  push:");
+    expect(workflow).not.toContain("  pull_request:");
+
+    // Without this the release step cannot create the release at all.
+    expect(workflow).toContain("contents: write");
+
+    // The gate compares the tag against the same value the test above locks.
+    expect(workflow).toContain('client/src-tauri/Cargo.toml');
+    expect(version).toBeTruthy();
+
+    // Bundling is driven by the CLI the README documents, not a floating major.
+    expect(workflow).toContain("@tauri-apps/cli@2.11.3");
+
+    // Every artifact glob must sit beside the target triple that --target writes.
+    for (const glob of workflow.match(/client\/src-tauri\/target\/[^\s*]+\/release\/bundle\/[a-z]+\//g) || []) {
+      expect(glob).toMatch(/target\/(?!release\/)/);
+    }
+    expect(workflow).toContain("universal-apple-darwin");
+    expect(workflow).toContain("aarch64-apple-darwin,x86_64-apple-darwin");
+
+    // `gh release create` rejects --generate-notes together with --notes.
+    // Comments are stripped first: this workflow's own prose mentions both,
+    // and a lazy match would otherwise start inside one of them.
+    const commands = workflow
+      .split(/\r?\n/)
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    const create = /gh release create[\s\S]*?artifacts\/\*/.exec(commands)?.[0] || "";
+    expect(create).toContain("--generate-notes");
+    expect(create).not.toContain("--notes ");
+    expect(create).not.toContain("--notes-file");
+  });
 });
 
 test("native download cancellation waits for registration and forwards progress", async () => {

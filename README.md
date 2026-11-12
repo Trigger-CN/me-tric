@@ -104,6 +104,32 @@ cargo build            # 或 bunx @tauri-apps/cli@2.11.3 build
 
 其中"桌面包里不得出现 `/transport.js`"是一条安全断言：桌面端的加密由 Rust 侧（`gateway.rs`）承担，如果 wasm 传输层被打进包里，就会出现双重加密或绕过原生桥接。
 
+### 发布：推送 tag 即出包（GitHub Actions）
+
+`.github/workflows/release.yml` 在推送 `v*` tag 时自动完成构建与发布：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+流程分三段：
+
+| Job | Runner | 做什么 |
+| --- | --- | --- |
+| `verify` | `windows-latest` | **tag 必须等于 `client/src-tauri/Cargo.toml` 的 `version`** → `bun test` → 前端装配 |
+| `build` | 矩阵 | Windows x64 → NSIS `.exe`；macOS universal → `.dmg`（两个架构同时安装后合并） |
+| `release` | `ubuntu-latest` | 汇总产物 → `gh release create`（已存在则 `gh release upload --clobber`）→ 把"未签名"说明插到自动 changelog 之上 |
+
+三个刻意的选择：
+
+- **版本以 tag 为准的门禁**。`tests/me_tric.test.js` 已经把 `Cargo.toml` / `Cargo.lock` / `tauri.conf.json` / `package.json` 锁在同一个值上，但锁不住"tag 打错"。所以先在 `verify` 里比一次，避免出现 `v0.2.0` 的 tag 里装着 `0.1.0` 的二进制。
+- **不构建 Linux**。`bundle.targets` 是 `["app"]`（macOS 专有格式），源码里 `target_os = "linux"` 出现 **0 次**，窗口造型完全建在 ~40 处 Windows 分支和打过 patch 的 wry 运行时上。把一个从未编译过的平台塞进流水线，只会让它在每次发版时变红。等有人真的在 Linux 上手工构建通了再加。
+- **产物未签名**。仓库没有签名身份，Windows 安装包会触发 SmartScreen，macOS 只有 ad-hoc 签名会被 Gatekeeper 拦。release note 里明说这一点，而不是让用户第一次启动时才发现。
+
+本地能验证的部分（不依赖 runner）：YAML 用 `yaml@2.9.1`（YAML 1.2，`on:` 不会被当成布尔）解析通过，三个 job 的结构、矩阵字段、产物路径与内嵌 shell 脚本（Git Bash `bash -n`）都已校验；**真正的构建与发布只能在 GitHub Runner 上跑**，本机无法验证。
+
+
 ---
 
 ## 3. 运行时架构
@@ -289,7 +315,7 @@ frontend-dist/index.html
 bun test tests/me_tric.test.js
 ```
 
-74 项测试（`74 pass, 0 fail`，630 expect），覆盖：
+75 项测试（`75 pass, 0 fail`，644 expect），覆盖：
 
 - 原生 UTF-8 JSON 响应 + 前端静态资源仍走浏览器 `fetch`
 - 就绪门控（`data-me-tric-startup="pending"` → `visibility:hidden` → `windowReady()` 一次性放行）
@@ -300,6 +326,7 @@ bun test tests/me_tric.test.js
 - 文本可选中边界
 - **消息输入框改用等宽字体**：`#prompt-input` 与 `.prompt-input-mirror` 必须同写一条 `font-family`（镜像元素用同样的文本量高度，字体度量不一致会让自动高度漂移）；只改字体、不写 `font-size`，移动端 `16px` 防聚焦缩放规则保持生效
 - UI 偏好白名单（4 个键，`gateway.endpoint` 必须被拒）
+- **发布流水线只从与包版本一致的 tag 触发**：`release.yml` 只监听 `push.tags: [v*]`，不因分支推送发版；持有 `contents: write`；tag 比对的目标就是上面那条版本锁定的 `Cargo.toml`；产物路径带 `--target` 引入的 triple；macOS universal 同时安装两个架构 target；`gh release create` 不得同时用 `--generate-notes` 与 `--notes`
 - 记住设备的增删与在线状态
 - macOS 关闭=隐藏、Reopen=恢复而非新开窗口
 - page-close JSON beacon 走原生传输
