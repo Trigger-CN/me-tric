@@ -289,14 +289,14 @@ frontend-dist/index.html
 bun test tests/me_tric.test.js
 ```
 
-69 项测试（`69 pass, 0 fail`，586 expect），覆盖：
+73 项测试（`73 pass, 0 fail`，625 expect），覆盖：
 
 - 原生 UTF-8 JSON 响应 + 前端静态资源仍走浏览器 `fetch`
 - 就绪门控（`data-me-tric-startup="pending"` → `visibility:hidden` → `windowReady()` 一次性放行）
 - iOS 不产生桌面窗口动作
 - 窗口标题去重缓存
 - 浏览器快捷键抑制（F5 / Ctrl+R / Ctrl+A / Alt+←→ / 右键菜单），同时不破坏 `.xterm` 与文本编辑
-- 平台窗口造型（compositor 圆角、Windows 阴影子窗口、`WS_EX_NOREDIRECTIONBITMAP`）
+- 平台窗口造型（compositor 圆角、Windows 阴影子窗口、`WS_EX_NOREDIRECTIONBITMAP`）；**四角统一圆角**（`#app` 自裁剪、侧栏/设备栏/工作区/调试面板各自承担对应角，设备栏存在时 `#app` 不取左圆角）；**顶部整条可拖动**（`data-tauri-drag-region` 不向子元素传递，改为 `mousedown` 事件委托并豁免所有交互控件）；**设置遮罩覆盖设备栏**（层级由 50 提到 950，且 modal < drawer 顺序不变）；**模型/上下文弹层居中**（覆盖上游的贴底抽屉造型）
 - 文本可选中边界
 - UI 偏好白名单（4 个键，`gateway.endpoint` 必须被拒）
 - 记住设备的增删与在线状态

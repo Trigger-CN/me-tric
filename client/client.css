@@ -136,6 +136,37 @@ html.me-tric-window-fullscreen body::after {
   display: none;
 }
 
+/* The settings modal is z-index 50 upstream while the device rail is 900, so the
+   backdrop dimmed the workspace but left the rail at full brightness and
+   clickable. Raise every me-tric overlay layer above the rail, keeping the
+   upstream order between them: modal (50) below drawer (65). */
+html.me-tric .modal-backdrop {
+  z-index: 950;
+}
+
+html.me-tric .drawer-backdrop {
+  z-index: 960;
+}
+
+/* Upstream `.drawer-backdrop` is a bottom sheet (`align-items: flex-end`), which
+   put the model picker and the context panel near the bottom of the window. These
+   two are dialogs, so center them; `frontend/` is read-only, hence the override.
+
+   The ID in the selector is deliberate: `frontend/style.css` sets
+   `align-items: end` again inside a `@media (max-height: 520px)` block, and the
+   extra ID keeps this rule winning regardless of viewport. */
+html.me-tric :is(#choice-drawer-backdrop, #context-drawer-backdrop) {
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+html.me-tric :is(#choice-drawer-backdrop, #context-drawer-backdrop) .choice-drawer {
+  border-bottom: 1px solid var(--border-bright);
+  border-radius: 16px;
+  max-height: min(680px, calc(100dvh - 40px));
+}
+
 .me-tric #login-screen,
 .me-tric #app {
   position: absolute;
@@ -146,6 +177,42 @@ html.me-tric-window-fullscreen body::after {
 
 .me-tric #app {
   background: var(--bg);
+  /* `body`'s radius paints the window outline but does not clip its children, so
+   // the app surface has to carry the same radius and clip itself — otherwise its
+   // square corners paint over the rounded window edge on the side where an opaque
+   // child (the sidebar / device rail) sits flush against the frame. */
+  border-radius: var(--client-window-radius);
+  overflow: hidden;
+}
+
+/* The device rail and the sidebar are fixed / grid children that sit flush against
+   the window edge and paint their own opaque background; clip them to the same
+   radius so neither square corner shows through.
+
+   Which element owns the window's left corner depends on whether the device rail is
+   present: with the rail, `#app` starts 52px in and the rail is the leftmost
+   surface; without it, the sidebar is. Both cases are covered. */
+.me-tric .sidebar {
+  border-top-left-radius: var(--client-window-radius);
+  border-bottom-left-radius: var(--client-window-radius);
+}
+
+.me-tric .me-tric-device-rail {
+  border-top-left-radius: var(--client-window-radius);
+  border-bottom-left-radius: var(--client-window-radius);
+}
+
+/* With the rail present the app surface no longer touches the window's left edge,
+   so it must not round that side (a notch would show above the rail). */
+html.me-tric.me-tric-has-device-rail #app {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.me-tric .workspace {
+  border-top-right-radius: var(--client-window-radius);
+  border-bottom-right-radius: var(--client-window-radius);
+  overflow: hidden;
 }
 
 .client-tabs-chrome {

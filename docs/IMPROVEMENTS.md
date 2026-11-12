@@ -265,6 +265,28 @@
 - 面板数据不持久化，刷新后从空开始（包括采样次数与速率窗口）。
 - 当前会话依赖侧边栏 `.agent-row.active` 这个 DOM 结构；如果上游改了行标记，面板会退化为“无选中会话”（不采样），而不是默默展示错会话。
 
+### A14. 窗口造型与拖动的四处修正（`client.css` / `client-runtime.js` / `debug-panel.css`）
+
+窗口是 `transparent: true` + `decorations: false`（`tauri.conf.json`），所有圆角、阴影与边框都由 CSS 自绘，原生 `WM_NCHITTEST` 只负责缩放边框与圆角命中（`lib.rs` 的 `windows_main_hit_test`）。四个用户可见问题及其成因：
+
+**1. 左边直角、右边圆角。** `body` 有 `border-radius`，但 **CSS 的 `border-radius` 不会裁剪子元素**（只有配合 `overflow: hidden` 才裁）。`#app` 是 `position: absolute; inset: 0` 且带 `background: var(--bg)`，设备栏（`position: fixed; left: 0`）与侧边栏各自也是不透明背景，这些直角矩形直接画在窗口圆角之外。右侧因为对话区有留白，反而看得到圆角。
+
+修法：让每个“贴到窗口边缘的面”自己持有对应的圆角——`#app` 整体加圆角并 `overflow: hidden`；`.sidebar` 与 `.me-tric-device-rail` 取左侧上下角；`.workspace` 与右侧固定的调试面板取右侧上下角。设备栏存在时 `#app` 已经不贴左边缘，因此用 `html.me-tric.me-tric-has-device-rail #app` 去掉它的左圆角，否则设备栏与 `#app` 之间会出现一个缺口。
+
+**2. 顶部拖动区域难用。** 拖动依赖 Tauri 的 `data-tauri-drag-region`，而 **这个属性只对携带它的元素自身的命中区域生效，不会传递给子元素**。原来的标记落在 `.workspace-heading`、`.view-tabs` 外层等容器上，它们内部全是 `<span>` 和按钮，所以只有元素之间的缝隙能拖。覆盖整条 38px 顶部的 `.client-titlebar` 又是 `pointer-events: none`，根本不接收事件。原生侧也不提供 `HTCAPTION`，所以没有后备路径。
+
+修法：改为 `mousedown` 事件委托（捕获阶段），只要 `clientY` 落在 `--client-chrome-height` 内、且目标不在豁免清单（`button` / `a[href]` / `input` / `select` / `textarea` / `label` / `[contenteditable]` / `[role=button]` / `[role=tab]` / 窗口控制组 / agent 行 / 设备栏 / 调试按钮）内，就 `preventDefault()` 并调用 `plugin:window|start_dragging`（权限 `core:window:allow-start-dragging` 已在 `capabilities/default.json`）。**不插入任何覆盖层**，所以不会有控件被遮住——这是先用覆盖层方案试过后放弃的原因：`.view-tabs` 与 `.sidebar-heading` 都没有独立层叠上下文，任何高 `z-index` 的覆盖层都会吃掉它们的点击。
+
+**3. 设置遮罩不覆盖设备栏。** `.modal-backdrop` 上游是 `z-index: 50`，设备栏是 `900`，所以遮罩压在设备栏下面：设置打开时设备栏仍然亮着且可点。修法：`html.me-tric .modal-backdrop { z-index: 950 }`，同时把抽屉提到 `960`，保持上游 modal(50) < drawer(65) 的相对顺序。
+
+**4. 模型/上下文弹层不居中。** 两者都是 `.drawer-backdrop` + `.choice-drawer`，上游把它们设计成**底部抽屉**：`align-items: flex-end`、`border-radius: 16px 16px 0 0`、`border-bottom: 0`。所以在屏幕靠下是设计行为，不是 bug。修法：在 me-tric 样式里把这两个 `#id` 的 `align-items` / `justify-content` 改成居中，并把抽屉造型改回四角 16px 的对话框（完整边框、`max-height: min(680px, calc(100dvh - 40px))`）。选择器带 `#id` 是必要的：`frontend/style.css` 在 `@media (max-height: 520px)` 里又设了一次 `align-items: end`。
+
+**已接受的残留风险**：
+
+- 四处修改都只能在 bun 测试里验证 CSS/JS 文本与断言；圆角观感、拖动手感、遮罩覆盖与弹层居中都需要在真实 Tauri 窗口里肉眼确认，本环境无法渲染 WebView。
+- 拖动豁免依赖一份选择器清单。若上游新增了带自定义指针交互的控件且不是 button/a/input 类，它会被当成空白区而触发拖窗。
+- 若未来 `frontend/` 把这两个弹层改成居中，上面的覆盖规则会变成冗余（但不影响正确性）。
+
 
 
 ---

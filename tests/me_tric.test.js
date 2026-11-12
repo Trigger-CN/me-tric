@@ -323,7 +323,13 @@ describe("ME Tric native adapter", () => {
     expect(css).not.toContain("--client-window-radius: 8px");
     expect(css).not.toContain("html.me-tric-platform-windows {");
     expect(css).toContain("html.me-tric,\nhtml.me-tric body {\n  background: transparent;\n}");
-    expect(css).toContain(".me-tric #app {\n  background: var(--bg);\n}");
+    expect(css).toContain(".me-tric #app {");
+    expect(css).toContain("background: var(--bg);");
+    // The app surface must clip itself to the window radius: `body`'s radius paints
+    // the outline but does not clip children, so without this the opaque sidebar and
+    // device rail painted square corners over the rounded window edge.
+    expect(css).toMatch(/\.me-tric #app \{[^}]*border-radius: var\(--client-window-radius\)/s);
+    expect(css).toMatch(/\.me-tric #app \{[^}]*overflow: hidden;/s);
     expect(css).not.toMatch(/\.me-tric\s+#login-screen(?:\s*,[^{}]*)?\s*\{[^}]*background\s*:/s);
     expect(sharedCss).toContain(".login-screen {");
     expect(sharedCss).toContain("radial-gradient(");
@@ -415,6 +421,75 @@ describe("ME Tric native adapter", () => {
     expect(sharedCss).toContain("flex: 0 0 44px");
     expect(shared).toContain("dynamicWindowTitle: false");
     expect(shared).toContain('`${sessionTitle} - ${runtimeCapabilities.pageTitle}`');
+  });
+
+  test("the window's four corners are rounded, not just the two on the right", () => {
+    const css = readFileSync(join(import.meta.dir, "../client/client.css"), "utf8");
+    // `body { border-radius }` paints the outline but does not clip children, so the
+    // opaque sidebar / device rail painted square corners over the rounded edge.
+    expect(css).toMatch(/\.me-tric #app \{[^}]*border-radius: var\(--client-window-radius\)/s);
+    expect(css).toMatch(/\.me-tric #app \{[^}]*overflow: hidden;/s);
+    expect(css).toMatch(/\.me-tric \.sidebar \{[^}]*border-top-left-radius: var\(--client-window-radius\)/s);
+    expect(css).toMatch(/\.me-tric \.sidebar \{[^}]*border-bottom-left-radius: var\(--client-window-radius\)/s);
+    expect(css).toMatch(/\.me-tric \.me-tric-device-rail \{[^}]*border-top-left-radius/s);
+    expect(css).toMatch(/\.me-tric \.workspace \{[^}]*border-top-right-radius: var\(--client-window-radius\)/s);
+    // With the rail visible the app surface no longer touches the left edge, so it
+    // must not round that side (that would leave a notch above the rail).
+    expect(css).toContain("html.me-tric.me-tric-has-device-rail #app {");
+    // The debug panel is pinned to the right edge and owns that corner too.
+    const debugCss = readFileSync(join(import.meta.dir, "../client/debug-panel.css"), "utf8");
+    expect(debugCss).toContain("border-top-right-radius: var(--client-window-radius, 0px);");
+    expect(debugCss).toContain("border-bottom-right-radius: var(--client-window-radius, 0px);");
+  });
+
+  test("dragging the window works across the whole top band, not just its gaps", () => {
+    const runtime = readFileSync(join(import.meta.dir, "../client/client-runtime.js"), "utf8");
+    // `data-tauri-drag-region` does not cascade to children, and the marks sat on
+    // containers full of spans and buttons, so pressing a child did nothing.
+    expect(runtime).toContain("function installDragRegion() {");
+    expect(runtime).toContain('document.addEventListener("mousedown"');
+    expect(runtime).toContain("event.clientY > chromeHeight()");
+    expect(runtime).toContain("target.closest(DRAG_EXEMPT)");
+    expect(runtime).toContain('invoke("plugin:window|start_dragging")');
+    expect(runtime).toContain("installDragRegion();");
+    // Every interactive surface inside the band keeps its own press behaviour.
+    const exempt = /const DRAG_EXEMPT = \[([\s\S]*?)\]\.join/.exec(runtime)?.[1] || "";
+    for (const selector of ["button", "input", "select", "textarea", "a[href]", "[contenteditable]",
+      "[role=\\\"tab\\\"]", ".client-window-controls", ".me-tric-device-rail"]) {
+      expect(exempt).toContain(selector);
+    }
+  });
+
+  test("the settings backdrop covers the device rail instead of sitting behind it", () => {
+    const css = readFileSync(join(import.meta.dir, "../client/client.css"), "utf8");
+    const railCss = readFileSync(join(import.meta.dir, "../client/device-manager.css"), "utf8");
+    const sharedCss = readFileSync(join(import.meta.dir, "../frontend/style.css"), "utf8");
+    // Upstream is z-index 50 while the rail is 900, so the rail stayed lit and clickable.
+    expect(sharedCss).toContain("z-index: 50");
+    expect(railCss).toMatch(/\.me-tric-device-rail \{[^}]*z-index: 900/s);
+    const raised = /html\.me-tric \.modal-backdrop \{\s*z-index: (\d+);/.exec(css);
+    expect(raised).not.toBe(null);
+    expect(Number(raised[1])).toBeGreaterThan(900);
+    // The drawers must stay above the modal, as upstream ordered them (50 < 65);
+    // raising only the modal would let its backdrop cover an open drawer.
+    const drawerLayer = /html\.me-tric \.drawer-backdrop \{\s*z-index: (\d+);/.exec(css);
+    expect(drawerLayer).not.toBe(null);
+    expect(Number(drawerLayer[1])).toBeGreaterThan(Number(raised[1]));
+  });
+
+  test("the model and context dialogs are centered, not pinned to the bottom", () => {
+    const css = readFileSync(join(import.meta.dir, "../client/client.css"), "utf8");
+    const sharedCss = readFileSync(join(import.meta.dir, "../frontend/style.css"), "utf8");
+    // Upstream `.drawer-backdrop` is a bottom sheet; these two are dialogs.
+    expect(sharedCss).toContain("align-items: flex-end");
+    const rule = /html\.me-tric :is\(#choice-drawer-backdrop, #context-drawer-backdrop\) \{([\s\S]*?)\}/.exec(css)?.[1] || "";
+    expect(rule).toContain("align-items: center;");
+    expect(rule).toContain("justify-content: center;");
+    // The bottom-sheet shape has to go with it, or a centered sheet still looks pinned.
+    const drawer = /html\.me-tric :is\(#choice-drawer-backdrop, #context-drawer-backdrop\) \.choice-drawer \{([\s\S]*?)\}/.exec(css)?.[1] || "";
+    expect(drawer).toContain("border-radius: 16px;");
+    expect(drawer).toContain("border-bottom: 1px solid var(--border-bright);");
+    expect(drawer).toContain("calc(100dvh - 40px)");
   });
   test("uses native app selection boundaries while keeping content copyable", () => {
     const css = readFileSync(join(import.meta.dir, "../client/client.css"), "utf8");

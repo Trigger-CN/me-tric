@@ -22,6 +22,7 @@
   let windowStateFrame = null;
 
   let clientChromeInstalled = false;
+  let dragRegionInstalled = false;
   const initialDocumentRoot = document.documentElement;
   initialDocumentRoot?.setAttribute?.("data-me-tric-startup", "pending");
   if (initialDocumentRoot?.style) initialDocumentRoot.style.visibility = "hidden";
@@ -260,6 +261,63 @@
     return element;
   }
 
+  /**
+   * Elements that must keep their own press behaviour inside the drag band.
+   * Matched by closest() from the event target, so a click on a button's inner
+   * `<span>` still counts as a click on the button.
+   */
+  const DRAG_EXEMPT = [
+    "button",
+    "a[href]",
+    "input",
+    "select",
+    "textarea",
+    "label",
+    "[contenteditable]",
+    "[role=\"button\"]",
+    "[role=\"tab\"]",
+    ".client-window-controls",
+    ".agent-row",
+    ".agent-item",
+    ".me-tric-device-rail",
+    ".me-tric-debug-toggle",
+  ].join(",");
+
+  /**
+   * Drag the window from anywhere in the top band that is not a control.
+   *
+   * `data-tauri-drag-region` only applies to the element carrying it and does not
+   * cascade to children. The marks therefore sat on containers full of `<span>`s
+   * and buttons, so pressing anywhere on a child did nothing and the title area
+   * felt unresponsive. Delegating instead keeps every control's own hit area
+   * (no overlay can swallow it) while making the whole band draggable.
+   */
+  function installDragRegion() {
+    if (dragRegionInstalled || !document || typeof document.addEventListener !== "function") return;
+    dragRegionInstalled = true;
+    document.addEventListener("mousedown", (event) => {
+      if (event.button !== 0 || event.defaultPrevented) return;
+      const target = event.target;
+      if (!target?.closest) return;
+      // The band is the window chrome height at the top edge only.
+      if (event.clientY > chromeHeight()) return;
+      if (target.closest(DRAG_EXEMPT)) return;
+      event.preventDefault();
+      // The core window command; `core:window:allow-start-dragging` is granted in
+      // capabilities/default.json. A failure is swallowed because a broken drag must
+      // never surface as a page error.
+      void invoke("plugin:window|start_dragging").catch(() => {});
+    }, { capture: true });
+  }
+
+  /** The chrome height in CSS pixels, read from the live custom property. */
+  function chromeHeight() {
+    const raw = globalThis.getComputedStyle?.(document.documentElement)
+      ?.getPropertyValue?.("--client-chrome-height") || "38px";
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) && value > 0 ? value : 38;
+  }
+
   function createWindowControl(action, label, kind) {
     const button = document.createElement("button");
     button.type = "button";
@@ -335,6 +393,7 @@
       tabs.before(chrome);
       chrome.append(tabs);
     }
+    installDragRegion();
     globalThis.addEventListener?.("resize", scheduleWindowStateRefresh);
     void refreshWindowState();
   }

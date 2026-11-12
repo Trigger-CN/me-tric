@@ -26,6 +26,9 @@
   color: var(--text);
   font-family: var(--me-tric-debug-font);
   font-size: 12px;
+  /* The panel is pinned to the window's right edge, so it owns that corner. */
+  border-top-right-radius: var(--client-window-radius, 0px);
+  border-bottom-right-radius: var(--client-window-radius, 0px);
   box-shadow: var(--shadow);
   transform: translateX(100%);
   transition: transform .18s ease-out;
