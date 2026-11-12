@@ -287,6 +287,34 @@
 - 拖动豁免依赖一份选择器清单。若上游新增了带自定义指针交互的控件且不是 button/a/input 类，它会被当成空白区而触发拖窗。
 - 若未来 `frontend/` 把这两个弹层改成居中，上面的覆盖规则会变成冗余（但不影响正确性）。
 
+### A15. 消息输入框改等宽字体，以及“内置了哪些字体”的实情（`client.css`）
+
+**1. 输入框原本为什么不是等宽。** `frontend/style.css:0415` 的 `#prompt-input, .prompt-input-mirror` 只声明了布局、颜色与 `line-height: 1.55`，**没有任何 `font-family`**，因此两者都继承 `body`；而 `body` 的栈（`style.css:027`）是 `Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`——无衬线比例字体。移动端媒体查询（`style.css:0705`）也只改 `font-size`，不涉及字体。所以这不是某个规则写错，而是**从来没有声明过**。
+
+修法：在 `client.css` 加一个 `--client-mono-font` 变量，并用**一条规则同时选中两个元素**：
+
+```css
+.me-tric #prompt-input,
+.me-tric .prompt-input-mirror {
+  font-family: var(--client-mono-font);
+}
+```
+
+- **两者必须同字体**：`app.js` 把输入框的 `value` 拷进 `.prompt-input-mirror`，再读它的 `scrollHeight` 把高度钳在 29–180px。镜像元素只要字体度量不同，算出的高度就会漂移。
+- **只设 `font-family`，不写 `font-size`**：移动端 16px 是为了阻止 iOS 聚焦时自动放大页面，优先级必须留给它。
+- 没有引入任何字体文件：沿用项目已有的等宽栈 `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`（`.tool-details`、`.system-prompt-input` 用的就是它）。
+
+**2. 项目到底内置了哪些字体。** 需要区分两件事：**真的打进产物里的字体文件**，和**只写了个族名、靠操作系统解析的字体**。
+
+**真正打包的只有 KaTeX 数学字体，共 20 个 `woff2`**：源在 `frontend/vendor/katex-fonts/`，构建时复制到 `client/frontend-dist/fonts/`。族名是 `KaTeX_AMS`、`KaTeX_Caligraphic`、`KaTeX_Fraktur`、`KaTeX_Main`、`KaTeX_Math`、`KaTeX_SansSerif`、`KaTeX_Script`、`KaTeX_Size1`–`Size4`、`KaTeX_Typewriter`。它们只由 `frontend/vendor/katex.min.css` 的 `@font-face` 声明，**只用于公式渲染**，正文一个字都不沾。
+
+**`Inter` 并没有打包。** 它只是 `body` 字体栈里的第一个名字。系统里没装 Inter 时，浏览器直接跳到下一个候选，所以界面正文实际用的是系统无衬线字体（Windows 上是 Segoe UI）。换句话说，**本项目没有分发任何正文字体**。
+
+**等宽字体全部来自系统。** 项目里所有 `monospace` 字样都是族名栈（`ui-monospace` / `SFMono-Regular` / `Menlo` / `Consolas` / 通用 `monospace`），没有任何自带的等宽字体文件；输入框改等宽后也一样，实际字形由操作系统决定。
+
+**附带发现的失效声明**：`frontend/style.css` 多处写 `font-family: var(--font-sans)`，但 `--font-sans` / `--font-mono` 在 `style.css` 与 `theme.css` 里**从未定义**，这些声明实际无效并回退到继承值。这是上游遗留，不属于本次修复范围。
+
+**验证**：`bun test` 74 pass / 0 fail / 630 expect（新增一条断言：两个选择器同在一规则块、值为等宽栈、该块内不得出现 `font-size`）；`bun ./build-frontend.js` 返回 `build=0`，装配后的 `client/frontend-dist/client.css` 确认包含这两行；`git diff --stat -- frontend` 为空。**字体观感需要真实窗口确认**，本环境无法渲染 WebView。
 
 
 ---

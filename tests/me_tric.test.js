@@ -515,6 +515,21 @@ describe("ME Tric native adapter", () => {
     expect(css).not.toContain("selectstart");
   });
 
+  test("renders the composer in monospace without touching the mobile font size", () => {
+    const css = readFileSync(join(import.meta.dir, "../client/client.css"), "utf8");
+    const sharedCss = readFileSync(join(import.meta.dir, "../frontend/style.css"), "utf8");
+    // Upstream sets no font-family on the composer, so it inherits body's sans stack.
+    const upstream = /#prompt-input, \.prompt-input-mirror \{([\s\S]*?)\}/.exec(sharedCss)?.[1] || "";
+    expect(upstream).not.toContain("font-family");
+    expect(css).toContain("--client-mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;");
+    // One rule must cover both: the mirror measures the text to size the box.
+    const rule = /\.me-tric #prompt-input,\s*\.me-tric \.prompt-input-mirror \{([\s\S]*?)\}/.exec(css)?.[1] || "";
+    expect(rule).toContain("font-family: var(--client-mono-font);");
+    // Overriding font-size here would defeat the mobile anti-zoom rule.
+    expect(rule).not.toContain("font-size");
+    expect(sharedCss).toContain("#prompt-input, .prompt-input-mirror { font-size: 16px; }");
+  });
+
   test("persists all target-independent UI preferences through the native settings adapter", async () => {
     const { runtime, calls } = loadClientRuntime();
     expect(runtime.devicePreferences.getItem("me-theme")).toBeNull();

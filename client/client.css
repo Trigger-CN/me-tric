@@ -48,10 +48,24 @@ html.me-tric {
   --client-chrome-height: 38px;
   --client-window-radius: 18px;
   --client-window-outline: color-mix(in srgb, var(--text) 10%, var(--bg));
+  --client-mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 html.me-tric[data-window-border-style="theme"] {
   --client-window-outline: var(--accent);
+}
+
+/* The composer is a code-entry surface: prompts carry paths, JSON and terminal
+   snippets, so monospace reads better than the inherited body sans-serif.
+
+   `.prompt-input-mirror` measures the same text to size the box, so both
+   elements must share one font or the auto-height drifts.
+
+   `font-size` is deliberately left alone: the mobile `@media (max-width: 700px)`
+   rule sets 16px to stop iOS from zooming on focus, and it must keep winning. */
+.me-tric #prompt-input,
+.me-tric .prompt-input-mirror {
+  font-family: var(--client-mono-font);
 }
 
 html.me-tric,
